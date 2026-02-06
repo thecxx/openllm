@@ -2,6 +2,7 @@ package openllm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -346,6 +347,7 @@ func (a *anthropicLLM) NewUserMessage(content string, opts ...MessageOption) Mes
 	return &anthropicMsg{
 		role:    constants.RoleUser,
 		content: content,
+		images:  options.imageURLs,
 	}
 }
 
@@ -362,6 +364,7 @@ type anthropicMsg struct {
 	role    string
 	content string
 	tcalls  []ToolCall
+	images  []ImageURL
 }
 
 // Role implements Message.
@@ -377,7 +380,86 @@ func (m *anthropicMsg) Content() string {
 // toMessageParam converts anthropicMsg to Anthropic's MessageParam.
 func (m *anthropicMsg) toMessageParam() anthropic.MessageParam {
 	var blocks []anthropic.ContentBlockParamUnion
-	if m.content != "" {
+	if len(m.images) > 0 {
+		for _, img := range m.images {
+			// Convert generic detail to Anthropic media type if possible, or default to image/jpeg
+			// Anthropic requires base64 data, but here we only have URL.
+			// However, Anthropic SDK's NewImageBlockSource is for base64.
+			// The user provided a URL. Anthropic API does NOT support image URLs directly.
+			// The user must provide base64 data.
+			// Assuming the "URL" field in ImageURL might contain base64 data for Anthropic
+			// OR we need to fetch it.
+			// BUT, the interface is generic.
+			// Let's assume for now that if the provider is Anthropic, the "URL" field
+			// SHOULD be a base64 string or we can't support it without fetching.
+			//
+			// Wait, the user prompt says "supports image inputs (OpenAI path)".
+			// For Anthropic, we need base64.
+			// Let's assume the user puts base64 in the URL field if they know they are using Anthropic,
+			// or we panic/error? No, better not panic.
+			//
+			// Actually, let's look at how we can support this.
+			// If it starts with "http", we might need to fetch it (not implemented here).
+			// If it's base64, we use it.
+			// For now, let's assume it is base64 data if it doesn't look like a URL?
+			// Or just pass it as data.
+
+			// Simple heuristic: check if it contains ";base64,"
+			mediaType := "image/jpeg"
+			data := img.URL
+			isURL := false
+
+			if strings.HasPrefix(img.URL, "http://") || strings.HasPrefix(img.URL, "https://") {
+				isURL = true
+			} else if idx := strings.Index(img.URL, ";base64,"); idx != -1 {
+				// data:image/png;base64,......
+				prefix := img.URL[:idx]
+				if strings.HasPrefix(prefix, "data:") {
+					mediaType = strings.TrimPrefix(prefix, "data:")
+				}
+				data = img.URL[idx+len(";base64,"):]
+			} else {
+				// No prefix found, try to detect media type from magic numbers
+				if len(data) > 15 {
+					// We need to decode a small chunk to check magic numbers
+					// Just take a safe prefix length
+					prefixData := data
+					if len(prefixData) > 64 {
+						prefixData = prefixData[:64]
+					}
+					decoded, err := base64.StdEncoding.DecodeString(prefixData)
+					if err == nil && len(decoded) > 4 {
+						// Check magic numbers
+						if len(decoded) >= 8 && string(decoded[0:8]) == "\x89PNG\r\n\x1a\n" {
+							mediaType = "image/png"
+						} else if len(decoded) >= 3 && string(decoded[0:3]) == "\xff\xd8\xff" {
+							mediaType = "image/jpeg"
+						} else if len(decoded) >= 6 && (string(decoded[0:6]) == "GIF87a" || string(decoded[0:6]) == "GIF89a") {
+							mediaType = "image/gif"
+						} else if len(decoded) >= 12 && string(decoded[0:4]) == "RIFF" && string(decoded[8:12]) == "WEBP" {
+							mediaType = "image/webp"
+						}
+					}
+				}
+			}
+
+			if isURL {
+				blocks = append(blocks, anthropic.NewImageBlock(
+					anthropic.URLImageSourceParam{
+						URL: img.URL,
+					},
+				))
+			} else {
+				blocks = append(blocks, anthropic.NewImageBlockBase64(
+					mediaType,
+					data,
+				))
+			}
+		}
+		if m.content != "" {
+			blocks = append(blocks, anthropic.NewTextBlock(m.content))
+		}
+	} else if m.content != "" {
 		blocks = append(blocks, anthropic.NewTextBlock(m.content))
 	}
 	for _, tc := range m.tcalls {

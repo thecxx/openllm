@@ -413,28 +413,3 @@ func (m *llmmsg) MarshalJSON() ([]byte, error) {
 func (m *llmmsg) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(data, &m.rawmsg)
 }
-
-// WithImageURL adds an image URL with automatic detail selection for OpenAI.
-func WithImageURL(imageURL string) MessageOption {
-	return func(opts *MessageOptions) {
-		opts.imageURLs = append(opts.imageURLs, ImageURL{
-			URL:    imageURL,
-			Detail: constants.ImageURLDetailAuto,
-		})
-	}
-}
-
-// WithImageURLDetail adds an image URL with an explicit detail level for OpenAI.
-func WithImageURLDetail(imageURL string, detail string) MessageOption {
-	if detail != constants.ImageURLDetailHigh &&
-		detail != constants.ImageURLDetailLow &&
-		detail != constants.ImageURLDetailAuto {
-		detail = constants.ImageURLDetailAuto
-	}
-	return func(opts *MessageOptions) {
-		opts.imageURLs = append(opts.imageURLs, ImageURL{
-			URL:    imageURL,
-			Detail: detail,
-		})
-	}
-}
