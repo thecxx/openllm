@@ -31,8 +31,10 @@ type FunctionDefinition struct {
 // FunctionOption defines a functional option for configuring a function tool.
 type FunctionOption func(opts *FunctionOptions)
 
-// WithFunction sets a callback function for the tool.
-func WithFunction(fnptr any) FunctionOption {
+// WithInvokeFunc sets a callback function for the tool.
+// The parameter struct T should use `openllm` for parameter configuration.
+// Format: `openllm:"name,required,desc=..."`
+func WithInvokeFunc(fnptr any) FunctionOption {
 	return func(opts *FunctionOptions) { opts.InvokeFunc = fnptr }
 }
 

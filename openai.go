@@ -98,7 +98,7 @@ func (l *llm) ChatCompletion(ctx context.Context, messages []Message, opts ...Ch
 		},
 		Duration: time.Since(start),
 		Meta: Meta{
-			Provider:          "openai",
+			Provider:          constants.ProviderOpenAI,
 			Model:             chatResp.Model,
 			RequestID:         chatResp.ID,
 			SystemFingerprint: chatResp.SystemFingerprint,
@@ -256,7 +256,7 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 		Usage:    Usage{},
 		Duration: time.Since(start),
 		Meta: Meta{
-			Provider: "openai",
+			Provider: constants.ProviderOpenAI,
 			Model:    l.name,
 		},
 	}

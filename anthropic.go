@@ -95,7 +95,7 @@ func (a *anthropicLLM) ChatCompletion(ctx context.Context, messages []Message, o
 
 	// Create anthropic message wrapper
 	answer := &anthropicMsg{
-		role:    string(chatResp.Role),
+		role:    constants.RoleAssistant,
 		content: content.String(),
 		tcalls:  tcalls,
 	}
@@ -110,7 +110,7 @@ func (a *anthropicLLM) ChatCompletion(ctx context.Context, messages []Message, o
 		},
 		Duration: time.Since(start),
 		Meta: Meta{
-			Provider:   "anthropic",
+			Provider:   constants.ProviderAnthropic,
 			Model:      a.name,
 			RequestID:  chatResp.ID,
 			StopReason: string(chatResp.StopReason),
@@ -153,7 +153,7 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 		switch ev := event.AsAny().(type) {
 		case anthropic.MessageStartEvent:
 			if ev.Message.Role != "" {
-				role = string(ev.Message.Role)
+				role = constants.RoleAssistant
 			}
 		case anthropic.ContentBlockStartEvent:
 			switch cb := ev.ContentBlock.AsAny().(type) {
@@ -227,7 +227,7 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 		Usage:    Usage{},
 		Duration: time.Since(start),
 		Meta: Meta{
-			Provider: "anthropic",
+			Provider: constants.ProviderAnthropic,
 			Model:    a.name,
 		},
 	}
@@ -272,9 +272,9 @@ func (a *anthropicLLM) makeRequest(opts *ChatOptions, messages []Message) (req a
 
 		var msgParam anthropic.MessageParam
 		switch role {
-		case string(anthropic.MessageParamRoleUser):
+		case constants.RoleUser:
 			msgParam = anthropic.NewUserMessage(anthropic.NewTextBlock(content))
-		case string(anthropic.MessageParamRoleAssistant):
+		case constants.RoleAssistant:
 			msgParam = anthropic.NewAssistantMessage(anthropic.NewTextBlock(content))
 		default:
 			// Default to user message
@@ -344,7 +344,7 @@ func (a *anthropicLLM) NewUserMessage(content string, opts ...MessageOption) Mes
 		opt(&options)
 	}
 	return &anthropicMsg{
-		role:    string(anthropic.MessageParamRoleUser),
+		role:    constants.RoleUser,
 		content: content,
 	}
 }
@@ -394,12 +394,12 @@ func (m *anthropicMsg) toMessageParam() anthropic.MessageParam {
 	}
 
 	switch m.role {
-	case string(anthropic.MessageParamRoleUser):
+	case constants.RoleUser:
 		if len(blocks) == 0 {
 			return anthropic.NewUserMessage(anthropic.NewTextBlock(""))
 		}
 		return anthropic.NewUserMessage(blocks...)
-	case string(anthropic.MessageParamRoleAssistant):
+	case constants.RoleAssistant:
 		if len(blocks) == 0 {
 			return anthropic.NewAssistantMessage(anthropic.NewTextBlock(""))
 		}
@@ -417,7 +417,7 @@ type anthropicToolResultMsg struct {
 
 // Role implements Message.
 func (m *anthropicToolResultMsg) Role() string {
-	return string(anthropic.MessageParamRoleUser)
+	return constants.RoleUser
 }
 
 // Content implements Message.
