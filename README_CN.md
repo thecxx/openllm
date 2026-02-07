@@ -12,12 +12,13 @@ OpenLLM 是一个用于 Go 语言的轻量级、统一的大语言模型（LLM�
 
 - **统一接口**：一个 `Model` 接口涵盖所有支持的 LLM，切换模型只需更改初始化逻辑。
 - **完整支持**：支持阻塞式对话（Chat Completion）和流式输出（Streaming）。
+- **推理/思考支持**：内置支持推理模型（如 OpenAI o1/o3, Claude 3.7+ Thinking），提供统一的 `WithReasoningEffort` 配置和流式处理。
 - **智能工具调用**：
   - 支持函数调用（Function Calling）。
   - **自动解析**：通过 Go 反射机制，自动从处理函数的参数结构体中解析 JSON Schema（支持自定义标签 `openllm`）。
 - **消息序列化**：提供跨提供商的消息编解码工具，方便对话历史的持久化与恢复。
-- **详尽统计**：在响应中包含 Token 消耗（输入/输出/缓存命中）、请求耗时及元信息（RequestID, Fingerprint 等）。
-- **多模态支持**：支持图片输入（OpenAI 路径）。
+- **详尽统计**：在响应中包含 Token 消耗（输入/输出/缓存命中/推理消耗）、请求耗时及元信息（RequestID, Fingerprint 等）。
+- **多模态支持**：支持图片输入（OpenAI 和 Anthropic 兼容）。
 
 ### 安装
 
@@ -45,7 +46,7 @@ model := openllm.NewLLM("gpt-4o", "OpenAI GPT-4o", client)
 import "github.com/thecxx/openllm"
 
 // 使用 API Key 直接初始化
-model := openllm.NewAnthropicLLMWithAPIKey("claude-3-5-sonnet-20240620", "Claude 3.5 Sonnet", "your-api-key")
+model := openllm.NewAnthropicLLMWithAPIKey("claude-3-7-sonnet-20250219", "Claude 3.7 Sonnet", "your-api-key")
 ```
 
 #### 2. 对话调用
@@ -53,15 +54,23 @@ model := openllm.NewAnthropicLLMWithAPIKey("claude-3-5-sonnet-20240620", "Claude
 ```go
 ctx := context.Background()
 messages := []openllm.Message{
-    model.NewUserMessage("你好，请介绍一下你自己。"),
+    // 使用全局工厂方法创建消息
+    openllm.NewUserMessage("你好，请介绍一下你自己。"),
 }
 
-resp, err := model.ChatCompletion(ctx, messages)
+// 可选：开启推理模式
+resp, err := model.ChatCompletion(ctx, messages,
+    openllm.WithReasoningEffort(constants.ReasoningEffortMedium),
+)
 if err != nil {
     log.Fatal(err)
 }
 
 fmt.Println("回答:", resp.Answer().Content())
+// 如果开启了推理功能
+if resp.Answer().Reasoning() != "" {
+    fmt.Println("思考过程:", resp.Answer().Reasoning())
+}
 fmt.Printf("消耗: %+v\n", resp.Usage())
 ```
 
@@ -69,9 +78,26 @@ fmt.Printf("消耗: %+v\n", resp.Usage())
 
 ```go
 // 实现 StreamWatcher 接口
-watcher := &MyStreamWatcher{} 
+type MyWatcher struct{}
 
-resp, err := model.ChatCompletionStream(ctx, messages, openllm.WithStreamWatcher(watcher))
+func (w *MyWatcher) OnContent(delta string) error {
+    fmt.Print(delta)
+    return nil
+}
+
+func (w *MyWatcher) OnReasoning(delta string) error {
+    fmt.Printf("[思考] %s", delta)
+    return nil
+}
+
+// ... 实现 StreamWatcher 的其他方法 ...
+
+watcher := &MyWatcher{} 
+
+resp, err := model.ChatCompletionStream(ctx, messages, 
+    openllm.WithStreamWatcher(watcher),
+    openllm.WithReasoningEffort(constants.ReasoningEffortHigh),
+)
 ```
 
 #### 4. 自动解析函数工具 (Tool Calling)
@@ -92,10 +118,10 @@ func Search(ctx context.Context, params *SearchParams) (string, error) {
 tool := openllm.DefineFunction(
     "search_engine", 
     "在互联网上搜索信息",
-    openllm.WithInvokeFunc(Search),
+    openllm.WithFunction(Search),
 )
 
-resp, err := model.ChatCompletion(ctx, messages, openllm.WithTools([]openllm.Tool{tool}))
+resp, err := model.ChatCompletion(ctx, messages, openllm.WithTool(tool))
 ```
 
 #### 5. 消息持久化 (序列化)
@@ -108,7 +134,7 @@ data, err := openllm.EncodeMessage(resp.Answer())
 
 // 从 JSON 反序列化并恢复给特定模型使用
 // 即使 model 切换了（如从 OpenAI 换到 Claude），反序列化也会自动适配
-restoredMsg, err := openllm.DecodeMessage(model, data)
+restoredMsg, err := openllm.DecodeMessage(data)
 ```
 
 ### 项目结构

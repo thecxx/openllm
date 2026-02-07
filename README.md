@@ -12,12 +12,13 @@ OpenLLM is a lightweight, unified Large Language Model (LLM) integration package
 
 - **Unified Interface**: Use a single `Model` interface for all supported LLMs. Switching providers only requires changing the initialization.
 - **Full Support**: Supports both blocking Chat Completion and Streaming output.
+- **Reasoning/Thinking Support**: Built-in support for reasoning models (e.g., OpenAI o1/o3, Claude 3.7+ Thinking) with unified `WithReasoningEffort` configuration and stream handling.
 - **Smart Tool Calling**:
   - Supports Function Calling.
   - **Auto Parsing**: Automatically generates JSON Schema from Go function parameter structs using reflection (supports custom `openllm` tags).
 - **Message Serialization**: Provides cross-provider message encoding/decoding for easy conversation history persistence and restoration.
-- **Detailed Statistics**: Includes token usage (input/output/cache hits), request duration, and metadata (RequestID, Fingerprint, etc.) in responses.
-- **Multimodal Support**: Supports image inputs (OpenAI path).
+- **Detailed Statistics**: Includes token usage (input/output/cache hits/reasoning tokens), request duration, and metadata (RequestID, Fingerprint, etc.) in responses.
+- **Multimodal Support**: Supports image inputs (OpenAI and Anthropic compatible).
 
 ### Installation
 
@@ -45,7 +46,7 @@ model := openllm.NewLLM("gpt-4o", "OpenAI GPT-4o", client)
 import "github.com/thecxx/openllm"
 
 // Initialize with API Key directly
-model := openllm.NewAnthropicLLMWithAPIKey("claude-3-5-sonnet-20240620", "Claude 3.5 Sonnet", "your-api-key")
+model := openllm.NewAnthropicLLMWithAPIKey("claude-3-7-sonnet-20250219", "Claude 3.7 Sonnet", "your-api-key")
 ```
 
 #### 2. Chat Completion
@@ -53,25 +54,50 @@ model := openllm.NewAnthropicLLMWithAPIKey("claude-3-5-sonnet-20240620", "Claude
 ```go
 ctx := context.Background()
 messages := []openllm.Message{
-    model.NewUserMessage("Hello, please introduce yourself."),
+    // Use global factory method to create messages
+    openllm.NewUserMessage("Hello, please introduce yourself."),
 }
 
-resp, err := model.ChatCompletion(ctx, messages)
+// Optional: Enable Reasoning
+resp, err := model.ChatCompletion(ctx, messages, 
+    openllm.WithReasoningEffort(constants.ReasoningEffortMedium),
+)
 if err != nil {
     log.Fatal(err)
 }
 
 fmt.Println("Answer:", resp.Answer().Content())
-fmt.Printf("Stats: %+v\n", resp.Usage())
+// If reasoning is enabled/supported
+if resp.Answer().Reasoning() != "" {
+    fmt.Println("Reasoning:", resp.Answer().Reasoning())
+}
+fmt.Printf("Usage: %+v\n", resp.Usage())
 ```
 
 #### 3. Streaming
 
 ```go
 // Implement StreamWatcher interface
-watcher := &MyStreamWatcher{} 
+type MyWatcher struct{}
 
-resp, err := model.ChatCompletionStream(ctx, messages, openllm.WithStreamWatcher(watcher))
+func (w *MyWatcher) OnContent(delta string) error {
+    fmt.Print(delta)
+    return nil
+}
+
+func (w *MyWatcher) OnReasoning(delta string) error {
+    fmt.Printf("[Thinking] %s", delta)
+    return nil
+}
+
+// ... implement other methods of StreamWatcher ...
+
+watcher := &MyWatcher{} 
+
+resp, err := model.ChatCompletionStream(ctx, messages, 
+    openllm.WithStreamWatcher(watcher),
+    openllm.WithReasoningEffort(constants.ReasoningEffortHigh),
+)
 ```
 
 #### 4. Auto Tool Parsing (Tool Calling)
@@ -92,10 +118,10 @@ func Search(ctx context.Context, params *SearchParams) (string, error) {
 tool := openllm.DefineFunction(
     "search_engine", 
     "Search information on the internet",
-    openllm.WithInvokeFunc(Search),
+    openllm.WithFunction(Search),
 )
 
-resp, err := model.ChatCompletion(ctx, messages, openllm.WithTools([]openllm.Tool{tool}))
+resp, err := model.ChatCompletion(ctx, messages, openllm.WithTool(tool))
 ```
 
 #### 5. Message Persistence (Serialization)
@@ -104,8 +130,8 @@ resp, err := model.ChatCompletion(ctx, messages, openllm.WithTools([]openllm.Too
 // Serialize to JSON
 data, err := openllm.EncodeMessage(resp.Answer())
 
-// Restore for a specific model (auto-adapts even if providers switch)
-restoredMsg, err := openllm.DecodeMessage(model, data)
+// Restore message (provider agnostic)
+restoredMsg, err := openllm.DecodeMessage(data)
 ```
 
 ### Project Structure
