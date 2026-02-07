@@ -102,14 +102,14 @@ func (a *anthropicLLM) ChatCompletion(ctx context.Context, messages []Message, o
 		role:      constants.RoleAssistant,
 		content:   []ContentPart{{Type: constants.ContentPartTypeText, Text: content.String()}},
 		reasoning: reasoning.String(),
-		toolCalls: func() []*toolcall {
+		toolcalls: func() []*toolcall {
 			if len(tcalls) == 0 {
 				return nil
 			}
 			var gtc []*toolcall
-			for _, tc := range tcalls {
-				if tc, ok := tc.(*toolcall); ok {
-					gtc = append(gtc, tc)
+			for _, tcall := range tcalls {
+				if tcall, ok := tcall.(*toolcall); ok {
+					gtc = append(gtc, tcall)
 				}
 			}
 			return gtc
@@ -175,7 +175,7 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 		switch ev := event.AsAny().(type) {
 		case anthropic.MessageStartEvent:
 			if ev.Message.Role != "" {
-				role = constants.RoleAssistant
+				role = string(ev.Message.Role)
 			}
 		case anthropic.ContentBlockStartEvent:
 			switch cb := ev.ContentBlock.AsAny().(type) {
@@ -247,17 +247,19 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 	}
 
 	answer := &llmmsg{
-		role:      role,
-		content:   []ContentPart{{Type: constants.ContentPartTypeText, Text: content.String()}},
+		role: role,
+		content: []ContentPart{
+			{Type: constants.ContentPartTypeText, Text: content.String()},
+		},
 		reasoning: reasoning.String(),
-		toolCalls: func() []*toolcall {
+		toolcalls: func() []*toolcall {
 			if len(tcalls) == 0 {
 				return nil
 			}
 			var gtc []*toolcall
-			for _, tc := range tcalls {
-				if tc, ok := tc.(*toolcall); ok {
-					gtc = append(gtc, tc)
+			for _, tcall := range tcalls {
+				if tcall, ok := tcall.(*toolcall); ok {
+					gtc = append(gtc, tcall)
 				}
 			}
 			return gtc
@@ -365,16 +367,16 @@ func (a *anthropicLLM) makeRequest(opts *ChatOptions, messages []Message) (req a
 		var toolParam anthropic.ToolParam
 		if def, ok := tool.Definition().(anthropic.ToolParam); ok {
 			toolParam = def
-		} else if def, ok := tool.Definition().(*FunctionDefinition); ok {
+		} else if def, ok := tool.Definition().(*function); ok {
 			// Convert generic FunctionDefinition to Anthropic ToolParam
 			toolParam = anthropic.ToolParam{
-				Name:        def.Name,
-				Description: anthropic.String(def.Description),
-				Strict:      anthropic.Bool(def.Strict),
+				Name:        def.name,
+				Description: anthropic.String(def.description),
+				Strict:      anthropic.Bool(def.strict),
 			}
 
 			// Handle InputSchema conversion from generic Parameters
-			if schema, ok := def.Parameters.(anthropic.ToolInputSchemaParam); ok {
+			if schema, ok := def.parameters.(anthropic.ToolInputSchemaParam); ok {
 				toolParam.InputSchema = schema
 			} else {
 				// Default minimal valid schema
@@ -384,8 +386,8 @@ func (a *anthropicLLM) makeRequest(opts *ChatOptions, messages []Message) (req a
 				}
 
 				// Try JSON round-trip for complex structures or jsonschema.Definition
-				if def.Parameters != nil {
-					data, err := json.Marshal(def.Parameters)
+				if def.parameters != nil {
+					data, err := json.Marshal(def.parameters)
 					if err == nil {
 						var inputSchema anthropic.ToolInputSchemaParam
 						if err := json.Unmarshal(data, &inputSchema); err == nil && inputSchema.Type != "" {
@@ -428,7 +430,7 @@ func (a *anthropicLLM) convertMessage(message Message) (anthropic.MessageParam, 
 	// Handle "tool" role (OpenAI) -> "user" role with ToolResultBlock (Anthropic)
 	if role == constants.RoleTool {
 		return anthropic.NewUserMessage(anthropic.NewToolResultBlock(
-			msg.toolCallID,
+			msg.toolcallID,
 			message.Content(),
 			false, // isError
 		)), nil
@@ -484,35 +486,28 @@ func (a *anthropicLLM) convertMessage(message Message) (anthropic.MessageParam, 
 					}
 				}
 
-				if isURL {
-					blocks = append(blocks, anthropic.NewImageBlock(
-						anthropic.URLImageSourceParam{
-							URL: imgURL,
-						},
-					))
+				if !isURL {
+					blocks = append(blocks, anthropic.NewImageBlockBase64(mediaType, data))
 				} else {
-					blocks = append(blocks, anthropic.NewImageBlockBase64(
-						mediaType,
-						data,
-					))
+					blocks = append(blocks, anthropic.NewImageBlock(anthropic.URLImageSourceParam{URL: imgURL}))
 				}
 			}
 		}
 	}
 
 	// 2. Process ToolCalls (Assistant role)
-	if len(msg.toolCalls) > 0 {
-		for _, tc := range msg.toolCalls {
-			if tc.type_ != constants.ToolTypeFunction {
+	if len(msg.toolcalls) > 0 {
+		for _, tcall := range msg.toolcalls {
+			if tcall.type_ != constants.ToolTypeFunction {
 				continue
 			}
 			var input map[string]any
-			if err := json.Unmarshal([]byte(tc.fcall.Arguments()), &input); err != nil {
+			if err := json.Unmarshal([]byte(tcall.fcall.Arguments()), &input); err != nil {
 				input = map[string]any{}
 			}
 			toolUse := anthropic.ToolUseBlockParam{
-				ID:    tc.id,
-				Name:  tc.fcall.Name(),
+				ID:    tcall.id,
+				Name:  tcall.fcall.Name(),
 				Input: input,
 			}
 			blocks = append(blocks, anthropic.ContentBlockParamUnion{OfToolUse: &toolUse})

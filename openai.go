@@ -126,29 +126,26 @@ func (l *llm) ChatCompletion(ctx context.Context, messages []Message, opts ...Ch
 						parts = append(parts, ContentPart{Type: constants.ContentPartTypeText, Text: p.Text})
 					} else if p.Type == openai.ChatMessagePartTypeImageURL && p.ImageURL != nil {
 						parts = append(parts, ContentPart{
-							Type: constants.ContentPartTypeImageURL,
-							ImageURL: &ImageURL{
-								URL:    p.ImageURL.URL,
-								Detail: string(p.ImageURL.Detail),
-							},
+							Type:     constants.ContentPartTypeImageURL,
+							ImageURL: &ImageURL{URL: p.ImageURL.URL, Detail: string(p.ImageURL.Detail)},
 						})
 					}
 				}
 				return parts
 			}(),
-			toolCalls: func() []*toolcall {
+			toolcalls: func() []*toolcall {
 				if len(tcalls) == 0 {
 					return nil
 				}
 				var gtc []*toolcall
-				for _, tc := range tcalls {
+				for _, tcall := range tcalls {
 					gtc = append(gtc, &toolcall{
-						index: tc.Index(),
-						id:    tc.ID(),
-						type_: tc.Type(),
+						index: tcall.Index(),
+						id:    tcall.ID(),
+						type_: tcall.Type(),
 						fcall: funcall{
-							name: tc.Function().Name(),
-							args: tc.Function().Arguments(),
+							name: tcall.Function().Name(),
+							args: tcall.Function().Arguments(),
 						},
 					})
 				}
@@ -263,7 +260,6 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 						type_: constants.ToolTypeFunction,
 						fcall: funcall{
 							name: call.Function.Name,
-							args: call.Function.Arguments,
 						},
 					}
 					if options.watcher != nil {
@@ -335,11 +331,8 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 						parts = append(parts, ContentPart{Type: constants.ContentPartTypeText, Text: p.Text})
 					} else if p.Type == openai.ChatMessagePartTypeImageURL && p.ImageURL != nil {
 						parts = append(parts, ContentPart{
-							Type: constants.ContentPartTypeImageURL,
-							ImageURL: &ImageURL{
-								URL:    p.ImageURL.URL,
-								Detail: string(p.ImageURL.Detail),
-							},
+							Type:     constants.ContentPartTypeImageURL,
+							ImageURL: &ImageURL{URL: p.ImageURL.URL, Detail: string(p.ImageURL.Detail)},
 						})
 					}
 				}
@@ -347,19 +340,19 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 			}(),
 			reasoning: rawmsg.ReasoningContent,
 			refusal:   rawmsg.Refusal,
-			toolCalls: func() []*toolcall {
+			toolcalls: func() []*toolcall {
 				if len(tcalls) == 0 {
 					return nil
 				}
 				var gtc []*toolcall
-				for _, tc := range tcalls {
+				for _, tcall := range tcalls {
 					gtc = append(gtc, &toolcall{
-						index: tc.Index(),
-						id:    tc.ID(),
-						type_: tc.Type(),
+						index: tcall.Index(),
+						id:    tcall.ID(),
+						type_: tcall.Type(),
 						fcall: funcall{
-							name: tc.Function().Name(),
-							args: tc.Function().Arguments(),
+							name: tcall.Function().Name(),
+							args: tcall.Function().Arguments(),
 						},
 					})
 				}
@@ -429,12 +422,12 @@ func (l *llm) makeRequest(opts *ChatOptions, messages []Message) (req openai.Cha
 		var fn *openai.FunctionDefinition
 		if def, ok := tool.Definition().(*openai.FunctionDefinition); ok {
 			fn = def
-		} else if def, ok := tool.Definition().(*FunctionDefinition); ok {
+		} else if def, ok := tool.Definition().(*function); ok {
 			fn = &openai.FunctionDefinition{
-				Name:        def.Name,
-				Description: def.Description,
-				Parameters:  def.Parameters,
-				Strict:      def.Strict,
+				Name:        def.name,
+				Description: def.description,
+				Parameters:  def.parameters,
+				Strict:      def.strict,
 			}
 		} else {
 			// Try JSON round-trip conversion for compatibility
@@ -473,7 +466,7 @@ func (l *llm) convertMessage(message Message) (openai.ChatCompletionMessage, err
 	raw := openai.ChatCompletionMessage{
 		Role:             msg.role,
 		ReasoningContent: msg.reasoning,
-		ToolCallID:       msg.toolCallID,
+		ToolCallID:       msg.toolcallID,
 	}
 
 	// Handle Content (Text + Images)
@@ -516,16 +509,16 @@ func (l *llm) convertMessage(message Message) (openai.ChatCompletionMessage, err
 	}
 
 	// Handle ToolCalls
-	if len(msg.toolCalls) > 0 {
-		for _, tc := range msg.toolCalls {
-			index := tc.index
+	if len(msg.toolcalls) > 0 {
+		for _, tcall := range msg.toolcalls {
+			index := tcall.index
 			raw.ToolCalls = append(raw.ToolCalls, openai.ToolCall{
 				Index: &index,
-				ID:    tc.id,
+				ID:    tcall.id,
 				Type:  openai.ToolTypeFunction,
 				Function: openai.FunctionCall{
-					Name:      tc.fcall.Name(),
-					Arguments: tc.fcall.Arguments(),
+					Name:      tcall.fcall.Name(),
+					Arguments: tcall.fcall.Arguments(),
 				},
 			})
 		}

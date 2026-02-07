@@ -13,18 +13,15 @@ type ChatOptions struct {
 	tools []Tool
 	// watcher handles streaming events during ChatCompletionStream; ignored for blocking calls.
 	watcher StreamWatcher
-
 	// maxTokens limits the maximum number of tokens generated in the response.
 	maxTokens *int
 	// temperature controls randomness; nil leaves it to server defaults.
 	// Typical values range from 0.0 (deterministic) to 2.0 (more random).
 	temperature *float64
-
 	// topK controls the number of highest probability vocabulary tokens to keep for top-k-filtering.
 	topK *int
 	// topP controls nucleus sampling, keeping the top tokens with cumulative probability >= topP.
 	topP *float64
-
 	// reasoningEffort controls the reasoning effort/budget.
 	// Values should be one of "low", "medium", "high" (see constants/reasoning.go).
 	reasoningEffort *string

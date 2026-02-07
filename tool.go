@@ -6,15 +6,13 @@ import (
 )
 
 // Tool describes a callable capability the model may invoke during generation.
-// For OpenAI function calling, Type should be "function" and Definition should
-// be an *openai.FunctionDefinition.
+// For OpenAI function calling, Type should be "function".
 type Tool interface {
 	// Type returns the category or kind of the tool.
 	// For OpenAI function calling this should be "function".
 	Type() string
 
 	// Definition returns the configuration/metadata of the tool.
-	// Typically this is *openai.FunctionDefinition for function calling.
 	Definition() any
 }
 
@@ -70,7 +68,7 @@ type toolcall struct {
 }
 
 // MarshalJSON implements json.Marshaler for toolcall.
-func (tc *toolcall) MarshalJSON() ([]byte, error) {
+func (tcall *toolcall) MarshalJSON() ([]byte, error) {
 	type alias struct {
 		Index    int      `json:"index"`
 		ID       string   `json:"id"`
@@ -78,15 +76,15 @@ func (tc *toolcall) MarshalJSON() ([]byte, error) {
 		Function *funcall `json:"function"`
 	}
 	return json.Marshal(&alias{
-		Index:    tc.index,
-		ID:       tc.id,
-		Type:     tc.type_,
-		Function: &tc.fcall,
+		Index:    tcall.index,
+		ID:       tcall.id,
+		Type:     tcall.type_,
+		Function: &tcall.fcall,
 	})
 }
 
 // UnmarshalJSON implements json.Unmarshaler for toolcall.
-func (tc *toolcall) UnmarshalJSON(data []byte) error {
+func (tcall *toolcall) UnmarshalJSON(data []byte) error {
 	type alias struct {
 		Index    int      `json:"index"`
 		ID       string   `json:"id"`
@@ -97,11 +95,11 @@ func (tc *toolcall) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &tmp); err != nil {
 		return err
 	}
-	tc.index = tmp.Index
-	tc.id = tmp.ID
-	tc.type_ = tmp.Type
+	tcall.index = tmp.Index
+	tcall.id = tmp.ID
+	tcall.type_ = tmp.Type
 	if tmp.Function != nil {
-		tc.fcall = *tmp.Function
+		tcall.fcall = *tmp.Function
 	}
 	return nil
 }
@@ -138,19 +136,19 @@ type funcall struct {
 }
 
 // MarshalJSON implements json.Marshaler for funcall.
-func (f *funcall) MarshalJSON() ([]byte, error) {
+func (fcall *funcall) MarshalJSON() ([]byte, error) {
 	type alias struct {
 		Name string `json:"name"`
 		Args string `json:"arguments"`
 	}
 	return json.Marshal(&alias{
-		Name: f.name,
-		Args: f.Arguments(),
+		Name: fcall.name,
+		Args: fcall.Arguments(),
 	})
 }
 
 // UnmarshalJSON implements json.Unmarshaler for funcall.
-func (f *funcall) UnmarshalJSON(data []byte) error {
+func (fcall *funcall) UnmarshalJSON(data []byte) error {
 	type alias struct {
 		Name string `json:"name"`
 		Args string `json:"arguments"`
@@ -159,8 +157,8 @@ func (f *funcall) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &tmp); err != nil {
 		return err
 	}
-	f.name = tmp.Name
-	f.args = tmp.Args
+	fcall.name = tmp.Name
+	fcall.args = tmp.Args
 	return nil
 }
 

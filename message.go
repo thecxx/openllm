@@ -14,12 +14,6 @@ type MessageOptions struct {
 	imageURLs []ImageURL
 }
 
-// ImageURL represents an image URL with detail level for multi-modal messages.
-type ImageURL struct {
-	URL    string `json:"url"`
-	Detail string `json:"detail,omitempty"`
-}
-
 // MessageOption applies a configuration to MessageOptions.
 // Multiple options can be combined; they are applied in the order provided.
 type MessageOption func(opts *MessageOptions)
@@ -37,10 +31,7 @@ func WithImageURLDetail(imageURL string, detail string) MessageOption {
 		detail = constants.ImageURLDetailAuto
 	}
 	return func(opts *MessageOptions) {
-		opts.imageURLs = append(opts.imageURLs, ImageURL{
-			URL:    imageURL,
-			Detail: detail,
-		})
+		opts.imageURLs = append(opts.imageURLs, ImageURL{URL: imageURL, Detail: detail})
 	}
 }
 
@@ -51,11 +42,11 @@ type Message interface {
 	// (e.g. system, assistant, user).
 	Role() string
 
-	// Content returns the textual content of the message.
-	Content() string
-
 	// Reasoning returns the reasoning/thinking content of the message (if any).
 	Reasoning() string
+
+	// Content returns the textual content of the message.
+	Content() string
 }
 
 // NewUserMessage creates a user-role message suitable for any model.
@@ -94,7 +85,7 @@ func NewUserMessage(content string, opts ...MessageOption) Message {
 func NewToolMessage(tool ToolCall, result string) Message {
 	return &llmmsg{
 		role:       constants.RoleTool,
-		toolCallID: tool.ID(),
+		toolcallID: tool.ID(),
 		content: []ContentPart{
 			{Type: constants.ContentPartTypeText, Text: result},
 		},
@@ -112,7 +103,7 @@ func NewSystemMessage(content string) Message {
 }
 
 // NewAssistantMessage creates an assistant-role message suitable for any model.
-func NewAssistantMessage(content string, toolCalls ...ToolCall) Message {
+func NewAssistantMessage(content string, toolcalls ...ToolCall) Message {
 	msg := &llmmsg{
 		role: constants.RoleAssistant,
 	}
@@ -121,15 +112,15 @@ func NewAssistantMessage(content string, toolCalls ...ToolCall) Message {
 			{Type: constants.ContentPartTypeText, Text: content},
 		}
 	}
-	if len(toolCalls) > 0 {
-		for _, tc := range toolCalls {
-			msg.toolCalls = append(msg.toolCalls, &toolcall{
-				index: tc.Index(),
-				id:    tc.ID(),
-				type_: tc.Type(),
+	if len(toolcalls) > 0 {
+		for _, tcall := range toolcalls {
+			msg.toolcalls = append(msg.toolcalls, &toolcall{
+				index: tcall.Index(),
+				id:    tcall.ID(),
+				type_: tcall.Type(),
 				fcall: funcall{
-					name: tc.Function().Name(),
-					args: tc.Function().Arguments(),
+					name: tcall.Function().Name(),
+					args: tcall.Function().Arguments(),
 				},
 			})
 		}
@@ -144,15 +135,20 @@ type ContentPart struct {
 	ImageURL *ImageURL `json:"image_url,omitempty"`
 }
 
+// ImageURL represents an image URL with detail level for multi-modal messages.
+type ImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
 // llmmsg implements Message interface using a unified structure.
 type llmmsg struct {
 	role       string
 	content    []ContentPart
-	toolCalls  []*toolcall
-	toolCallID string
+	toolcalls  []*toolcall
+	toolcallID string
 	reasoning  string
 	refusal    string
-	name       string
 }
 
 // Role implements Message.
@@ -186,16 +182,14 @@ func (m *llmmsg) MarshalJSON() ([]byte, error) {
 		ToolCallID string        `json:"tool_call_id,omitempty"`
 		Reasoning  string        `json:"reasoning,omitempty"`
 		Refusal    string        `json:"refusal,omitempty"`
-		Name       string        `json:"name,omitempty"`
 	}
 	return json.Marshal(&alias{
 		Role:       m.role,
 		Content:    m.content,
-		ToolCalls:  m.toolCalls,
-		ToolCallID: m.toolCallID,
+		ToolCalls:  m.toolcalls,
+		ToolCallID: m.toolcallID,
 		Reasoning:  m.reasoning,
 		Refusal:    m.refusal,
-		Name:       m.name,
 	})
 }
 
@@ -208,7 +202,6 @@ func (m *llmmsg) UnmarshalJSON(data []byte) error {
 		ToolCallID string        `json:"tool_call_id,omitempty"`
 		Reasoning  string        `json:"reasoning,omitempty"`
 		Refusal    string        `json:"refusal,omitempty"`
-		Name       string        `json:"name,omitempty"`
 	}
 	var tmp alias
 	if err := json.Unmarshal(data, &tmp); err != nil {
@@ -216,11 +209,10 @@ func (m *llmmsg) UnmarshalJSON(data []byte) error {
 	}
 	m.role = tmp.Role
 	m.content = tmp.Content
-	m.toolCalls = tmp.ToolCalls
-	m.toolCallID = tmp.ToolCallID
+	m.toolcalls = tmp.ToolCalls
+	m.toolcallID = tmp.ToolCallID
 	m.reasoning = tmp.Reasoning
 	m.refusal = tmp.Refusal
-	m.name = tmp.Name
 	return nil
 }
 
