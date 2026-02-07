@@ -9,12 +9,15 @@ type Response interface {
 	Answer() Message
 	// ToolCalls returns tool invocation records in the order they were produced.
 	ToolCalls() []ToolCall
-	// Stats returns request-level statistics and metadata.
+	// Usage returns the token usage statistics.
 	// Notes:
 	// - Blocking requests usually provide complete Usage (input/output tokens and cache-related metrics).
-	// - Streaming requests in current SDKs typically do not expose Usage; only duration and basic metadata are available.
-	//   If the underlying SDK supports streaming usage events (e.g., include_usage), we can aggregate Usage at the end.
-	Stats() Stats
+	// - Streaming requests in current SDKs typically do not expose Usage; usually empty or partial.
+	Usage() Usage
+	// Meta returns the request metadata (provider, model, request ID, etc.).
+	Meta() Meta
+	// Duration returns the total elapsed time of the request.
+	Duration() time.Duration
 }
 
 // response is the concrete implementation of Response.
@@ -23,8 +26,12 @@ type response struct {
 	answer Message
 	// tcalls holds all function tool calls captured during generation.
 	tcalls []ToolCall
-	// stats captures usage counters, duration, and provider/model metadata.
-	stats Stats
+	// usage captures token and cache-related consumption metrics.
+	usage Usage
+	// meta contains request metadata.
+	meta Meta
+	// duration captures the elapsed time from request start to completion.
+	duration time.Duration
 }
 
 // Answer implements Response by returning the final assistant message.
@@ -37,8 +44,19 @@ func (resp *response) ToolCalls() []ToolCall {
 	return resp.tcalls
 }
 
-func (resp *response) Stats() Stats {
-	return resp.stats
+// Usage implements Response.
+func (resp *response) Usage() Usage {
+	return resp.usage
+}
+
+// Meta implements Response.
+func (resp *response) Meta() Meta {
+	return resp.meta
+}
+
+// Duration implements Response.
+func (resp *response) Duration() time.Duration {
+	return resp.duration
 }
 
 // Usage captures token and cache-related consumption metrics.
@@ -71,14 +89,4 @@ type Meta struct {
 	SystemFingerprint string
 	// reason the generation stopped (e.g., stop_sequence, max_tokens, tool_use).
 	StopReason string
-}
-
-// Stats aggregates per-request metrics and metadata:
-type Stats struct {
-	// token/cache metrics (complete on blocking paths; may be empty for streaming depending on SDK support).
-	Usage Usage
-	// elapsed time from request start to completion.
-	Duration time.Duration
-	// provider, model, request identifiers, and stop reason.
-	Meta Meta
 }

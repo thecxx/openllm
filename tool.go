@@ -1,6 +1,7 @@
 package openllm
 
 import (
+	"encoding/json"
 	"strings"
 )
 
@@ -68,6 +69,43 @@ type toolcall struct {
 	fcall funcall
 }
 
+// MarshalJSON implements json.Marshaler for toolcall.
+func (tc *toolcall) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Index    int      `json:"index"`
+		ID       string   `json:"id"`
+		Type     string   `json:"type"`
+		Function *funcall `json:"function"`
+	}
+	return json.Marshal(&alias{
+		Index:    tc.index,
+		ID:       tc.id,
+		Type:     tc.type_,
+		Function: &tc.fcall,
+	})
+}
+
+// UnmarshalJSON implements json.Unmarshaler for toolcall.
+func (tc *toolcall) UnmarshalJSON(data []byte) error {
+	type alias struct {
+		Index    int      `json:"index"`
+		ID       string   `json:"id"`
+		Type     string   `json:"type"`
+		Function *funcall `json:"function"`
+	}
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	tc.index = tmp.Index
+	tc.id = tmp.ID
+	tc.type_ = tmp.Type
+	if tmp.Function != nil {
+		tc.fcall = *tmp.Function
+	}
+	return nil
+}
+
 // Index implements ToolCall.
 func (tcall *toolcall) Index() int {
 	return tcall.index
@@ -97,6 +135,33 @@ type funcall struct {
 	args string
 	// buff accumulates streamed argument deltas until completion.
 	buff strings.Builder
+}
+
+// MarshalJSON implements json.Marshaler for funcall.
+func (f *funcall) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Name string `json:"name"`
+		Args string `json:"arguments"`
+	}
+	return json.Marshal(&alias{
+		Name: f.name,
+		Args: f.Arguments(),
+	})
+}
+
+// UnmarshalJSON implements json.Unmarshaler for funcall.
+func (f *funcall) UnmarshalJSON(data []byte) error {
+	type alias struct {
+		Name string `json:"name"`
+		Args string `json:"arguments"`
+	}
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	f.name = tmp.Name
+	f.args = tmp.Args
+	return nil
 }
 
 // Name implements FunctionCall.

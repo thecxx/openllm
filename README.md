@@ -62,7 +62,7 @@ if err != nil {
 }
 
 fmt.Println("Answer:", resp.Answer().Content())
-fmt.Printf("Stats: %+v\n", resp.Stats().Usage)
+fmt.Printf("Stats: %+v\n", resp.Usage())
 ```
 
 #### 3. Streaming
@@ -105,7 +105,7 @@ resp, err := model.ChatCompletion(ctx, messages, openllm.WithTools([]openllm.Too
 data, err := openllm.EncodeMessage(resp.Answer())
 
 // Restore for a specific model (auto-adapts even if providers switch)
-restoredMsg, err := openllm.DecodeMessage(data, model)
+restoredMsg, err := openllm.DecodeMessage(model, data)
 ```
 
 ### Project Structure

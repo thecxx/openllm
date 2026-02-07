@@ -62,7 +62,7 @@ if err != nil {
 }
 
 fmt.Println("回答:", resp.Answer().Content())
-fmt.Printf("消耗: %+v\n", resp.Stats().Usage)
+fmt.Printf("消耗: %+v\n", resp.Usage())
 ```
 
 #### 3. 流式对话
@@ -108,7 +108,7 @@ data, err := openllm.EncodeMessage(resp.Answer())
 
 // 从 JSON 反序列化并恢复给特定模型使用
 // 即使 model 切换了（如从 OpenAI 换到 Claude），反序列化也会自动适配
-restoredMsg, err := openllm.DecodeMessage(data, model)
+restoredMsg, err := openllm.DecodeMessage(model, data)
 ```
 
 ### 项目结构

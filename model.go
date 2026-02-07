@@ -6,6 +6,10 @@ import (
 
 // StreamWatcher handles events emitted during LLM generation.
 type StreamWatcher interface {
+	OnRefusal(delta string) error
+
+	OnReasoning(delta string) error
+
 	// OnContent is invoked whenever the model emits a piece of streamed output.
 	OnContent(delta string) error
 
@@ -45,10 +49,4 @@ type Model interface {
 	// It behaves similarly to Chat but emits partial outputs via the StreamEventHandler
 	// provided in options.
 	ChatCompletionStream(ctx context.Context, messages []Message, opts ...ChatOption) (resp Response, err error)
-
-	// NewUserMessage creates a user-role message suitable for this model.
-	NewUserMessage(content string, opts ...MessageOption) Message
-
-	// NewToolMessage creates a tool result message suitable for this model.
-	NewToolMessage(tool ToolCall, result string) Message
 }

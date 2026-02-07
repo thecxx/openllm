@@ -69,6 +69,7 @@ func (a *anthropicLLM) ChatCompletion(ctx context.Context, messages []Message, o
 	}
 
 	var content strings.Builder
+	var reasoning strings.Builder
 	var tcalls []ToolCall
 	var toolCallIndex int
 
@@ -76,6 +77,8 @@ func (a *anthropicLLM) ChatCompletion(ctx context.Context, messages []Message, o
 		switch b := block.AsAny().(type) {
 		case anthropic.TextBlock:
 			content.WriteString(b.Text)
+		case anthropic.ThinkingBlock:
+			reasoning.WriteString(b.Thinking)
 		case anthropic.ToolUseBlock:
 			argsJSON, err := json.Marshal(b.Input)
 			if err != nil {
@@ -95,29 +98,46 @@ func (a *anthropicLLM) ChatCompletion(ctx context.Context, messages []Message, o
 	}
 
 	// Create anthropic message wrapper
-	answer := &anthropicMsg{
-		role:    constants.RoleAssistant,
-		content: content.String(),
-		tcalls:  tcalls,
+	answer := &llmmsg{
+		role:      constants.RoleAssistant,
+		content:   []ContentPart{{Type: constants.ContentPartTypeText, Text: content.String()}},
+		reasoning: reasoning.String(),
+		toolCalls: func() []*toolcall {
+			if len(tcalls) == 0 {
+				return nil
+			}
+			var gtc []*toolcall
+			for _, tc := range tcalls {
+				if tc, ok := tc.(*toolcall); ok {
+					gtc = append(gtc, tc)
+				}
+			}
+			return gtc
+		}(),
 	}
 
-	stats := Stats{
-		Usage: Usage{
-			InputTokens:              int(chatResp.Usage.InputTokens),
-			OutputTokens:             int(chatResp.Usage.OutputTokens),
-			TotalTokens:              int(chatResp.Usage.InputTokens + chatResp.Usage.OutputTokens),
-			CacheCreationInputTokens: int(chatResp.Usage.CacheCreationInputTokens),
-			CacheReadInputTokens:     int(chatResp.Usage.CacheReadInputTokens),
-		},
-		Duration: time.Since(start),
-		Meta: Meta{
-			Provider:   constants.ProviderAnthropic,
-			Model:      a.name,
-			RequestID:  chatResp.ID,
-			StopReason: string(chatResp.StopReason),
-		},
+	usage := Usage{
+		InputTokens:              int(chatResp.Usage.InputTokens),
+		OutputTokens:             int(chatResp.Usage.OutputTokens),
+		TotalTokens:              int(chatResp.Usage.InputTokens + chatResp.Usage.OutputTokens),
+		CacheCreationInputTokens: int(chatResp.Usage.CacheCreationInputTokens),
+		CacheReadInputTokens:     int(chatResp.Usage.CacheReadInputTokens),
 	}
-	return &response{answer: answer, tcalls: tcalls, stats: stats}, nil
+	duration := time.Since(start)
+	meta := Meta{
+		Provider:   constants.ProviderAnthropic,
+		Model:      a.name,
+		RequestID:  chatResp.ID,
+		StopReason: string(chatResp.StopReason),
+	}
+
+	return &response{
+		answer:   answer,
+		tcalls:   tcalls,
+		usage:    usage,
+		duration: duration,
+		meta:     meta,
+	}, nil
 }
 
 // ChatCompletionStream performs a streaming chat completion request.
@@ -143,9 +163,10 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 	stream := a.client.Messages.NewStreaming(ctx, req)
 
 	var (
-		role    string
-		content strings.Builder
-		callm   = make(map[int]*toolcall)
+		role      string
+		content   strings.Builder
+		reasoning strings.Builder
+		callm     = make(map[int]*toolcall)
 	)
 
 	for stream.Next() {
@@ -183,6 +204,13 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 					}
 				}
 				content.WriteString(d.Text)
+			case anthropic.ThinkingDelta:
+				if options.watcher != nil {
+					if err := options.watcher.OnReasoning(d.Thinking); err != nil {
+						return nil, err
+					}
+				}
+				reasoning.WriteString(d.Thinking)
 			case anthropic.InputJSONDelta:
 				if tcall, found := callm[int(ev.Index)]; found {
 					if options.watcher != nil {
@@ -218,21 +246,34 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 		})
 	}
 
-	answer := &anthropicMsg{
-		role:    role,
-		content: content.String(),
-		tcalls:  tcalls,
+	answer := &llmmsg{
+		role:      role,
+		content:   []ContentPart{{Type: constants.ContentPartTypeText, Text: content.String()}},
+		reasoning: reasoning.String(),
+		toolCalls: func() []*toolcall {
+			if len(tcalls) == 0 {
+				return nil
+			}
+			var gtc []*toolcall
+			for _, tc := range tcalls {
+				if tc, ok := tc.(*toolcall); ok {
+					gtc = append(gtc, tc)
+				}
+			}
+			return gtc
+		}(),
 	}
 
-	stats := Stats{
-		Usage:    Usage{},
-		Duration: time.Since(start),
-		Meta: Meta{
+	return &response{
+		answer:   answer,
+		tcalls:   tcalls,
+		usage:    Usage{},
+		duration: time.Since(start),
+		meta: Meta{
 			Provider: constants.ProviderAnthropic,
 			Model:    a.name,
 		},
-	}
-	return &response{answer: answer, tcalls: tcalls, stats: stats}, nil
+	}, nil
 }
 
 // makeRequest builds an Anthropic MessageNewParams from ChatOptions and Message list.
@@ -240,10 +281,66 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 // and attaches tool definitions when provided.
 func (a *anthropicLLM) makeRequest(opts *ChatOptions, messages []Message) (req anthropic.MessageNewParams, err error) {
 	req.Model = anthropic.Model(a.name)
-	// req.MaxTokens = int64(4096) // Default max tokens
+	req.MaxTokens = int64(4096) // Default max tokens
 
 	// Set temperature (optional). If your SDK version requires param.Opt,
 	// you can wire it here; otherwise omit to use server defaults.
+
+	// Option: MaxTokens
+	if opts.maxTokens != nil {
+		req.MaxTokens = int64(*opts.maxTokens)
+	}
+	// Option: Temperature
+	if opts.temperature != nil {
+		req.Temperature = anthropic.Opt(*opts.temperature)
+	}
+	// Option: TopK
+	if opts.topK != nil {
+		req.TopK = anthropic.Opt(int64(*opts.topK))
+	}
+	// Option: TopP
+	if opts.topP != nil {
+		req.TopP = anthropic.Opt(*opts.topP)
+	}
+
+	// Option: ReasoningEffort
+	if opts.reasoningEffort != nil {
+		var budget int64
+		switch *opts.reasoningEffort {
+		case constants.ReasoningEffortLow:
+			budget = 1024
+		case constants.ReasoningEffortMedium:
+			budget = 4096
+		case constants.ReasoningEffortHigh:
+			budget = 8192
+		default:
+			budget = 4096 // Default to Medium
+		}
+
+		// Ensure budget < max_tokens
+		// If max_tokens is set, cap budget.
+		// Note: Anthropic requires budget < max_tokens.
+		// If max_tokens is not set in options, we used default 4096 above.
+		maxTokens := req.MaxTokens
+		if budget >= maxTokens {
+			// Reserve some space for output?
+			// Actually, Anthropic docs say: "budget_tokens must be less than max_tokens"
+			// Let's cap it at maxTokens - 1 to be safe, or just reduce it.
+			// If maxTokens is small (e.g. 1024), low budget (1024) would fail.
+			if maxTokens > 64 {
+				budget = maxTokens - 64 // Leave room for at least a small response
+			} else {
+				// Very small max_tokens, disable thinking or set to minimum?
+				// Minimum budget is 1024 usually. If max_tokens < 1024, we can't enable thinking properly.
+				// But let's just clamp to maxTokens-1 for API correctness attempt, though it might error.
+				budget = maxTokens - 1
+			}
+		}
+
+		if budget > 0 {
+			req.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
+		}
+	}
 
 	// Set system prompt
 	if opts.prompt != "" {
@@ -255,31 +352,9 @@ func (a *anthropicLLM) makeRequest(opts *ChatOptions, messages []Message) (req a
 	// Convert messages
 	var anthropicMessages []anthropic.MessageParam
 	for _, message := range messages {
-		// Try to cast to anthropicMsg first for efficiency
-		if msg, ok := message.(*anthropicMsg); ok {
-			anthropicMessages = append(anthropicMessages, msg.toMessageParam())
-			continue
-		}
-
-		// Try to cast to anthropicToolResultMsg
-		if msg, ok := message.(*anthropicToolResultMsg); ok {
-			anthropicMessages = append(anthropicMessages, msg.toMessageParam())
-			continue
-		}
-
-		// Fallback: create message from role and content
-		role := message.Role()
-		content := message.Content()
-
-		var msgParam anthropic.MessageParam
-		switch role {
-		case constants.RoleUser:
-			msgParam = anthropic.NewUserMessage(anthropic.NewTextBlock(content))
-		case constants.RoleAssistant:
-			msgParam = anthropic.NewAssistantMessage(anthropic.NewTextBlock(content))
-		default:
-			// Default to user message
-			msgParam = anthropic.NewUserMessage(anthropic.NewTextBlock(content))
+		msgParam, err := a.convertMessage(message)
+		if err != nil {
+			return req, err
 		}
 		anthropicMessages = append(anthropicMessages, msgParam)
 	}
@@ -338,176 +413,130 @@ func (a *anthropicLLM) makeRequest(opts *ChatOptions, messages []Message) (req a
 	return req, nil
 }
 
-// NewUserMessage creates a user-role message suitable for Anthropic.
-func (a *anthropicLLM) NewUserMessage(content string, opts ...MessageOption) Message {
-	var options MessageOptions
-	for _, opt := range opts {
-		opt(&options)
+// convertMessage transforms the unified Message (llmmsg) into Anthropic's MessageParam.
+// It handles role mapping, content blocks, image conversion, and tool calls.
+func (a *anthropicLLM) convertMessage(message Message) (anthropic.MessageParam, error) {
+	// Cast to llmmsg to access internal structure
+	msg, ok := message.(*llmmsg)
+	if !ok {
+		// Fallback for custom implementations (should ideally not happen with global factories)
+		return anthropic.NewUserMessage(anthropic.NewTextBlock(message.Content())), nil
 	}
-	return &anthropicMsg{
-		role:    constants.RoleUser,
-		content: content,
-		images:  options.imageURLs,
+
+	role := msg.role
+
+	// Handle "tool" role (OpenAI) -> "user" role with ToolResultBlock (Anthropic)
+	if role == constants.RoleTool {
+		return anthropic.NewUserMessage(anthropic.NewToolResultBlock(
+			msg.toolCallID,
+			message.Content(),
+			false, // isError
+		)), nil
 	}
-}
 
-// NewToolMessage creates a tool result message suitable for Anthropic.
-func (a *anthropicLLM) NewToolMessage(tool ToolCall, result string) Message {
-	return &anthropicToolResultMsg{
-		toolUseID: tool.ID(),
-		content:   result,
-	}
-}
-
-// anthropicMsg implements Message interface using Anthropic's message format.
-type anthropicMsg struct {
-	role    string
-	content string
-	tcalls  []ToolCall
-	images  []ImageURL
-}
-
-// Role implements Message.
-func (m *anthropicMsg) Role() string {
-	return m.role
-}
-
-// Content implements Message.
-func (m *anthropicMsg) Content() string {
-	return m.content
-}
-
-// toMessageParam converts anthropicMsg to Anthropic's MessageParam.
-func (m *anthropicMsg) toMessageParam() anthropic.MessageParam {
+	// Handle standard roles (user, assistant)
 	var blocks []anthropic.ContentBlockParamUnion
-	if len(m.images) > 0 {
-		for _, img := range m.images {
-			// Convert generic detail to Anthropic media type if possible, or default to image/jpeg
-			// Anthropic requires base64 data, but here we only have URL.
-			// However, Anthropic SDK's NewImageBlockSource is for base64.
-			// The user provided a URL. Anthropic API does NOT support image URLs directly.
-			// The user must provide base64 data.
-			// Assuming the "URL" field in ImageURL might contain base64 data for Anthropic
-			// OR we need to fetch it.
-			// BUT, the interface is generic.
-			// Let's assume for now that if the provider is Anthropic, the "URL" field
-			// SHOULD be a base64 string or we can't support it without fetching.
-			//
-			// Wait, the user prompt says "supports image inputs (OpenAI path)".
-			// For Anthropic, we need base64.
-			// Let's assume the user puts base64 in the URL field if they know they are using Anthropic,
-			// or we panic/error? No, better not panic.
-			//
-			// Actually, let's look at how we can support this.
-			// If it starts with "http", we might need to fetch it (not implemented here).
-			// If it's base64, we use it.
-			// For now, let's assume it is base64 data if it doesn't look like a URL?
-			// Or just pass it as data.
 
-			// Simple heuristic: check if it contains ";base64,"
-			mediaType := "image/jpeg"
-			data := img.URL
-			isURL := false
-
-			if strings.HasPrefix(img.URL, "http://") || strings.HasPrefix(img.URL, "https://") {
-				isURL = true
-			} else if idx := strings.Index(img.URL, ";base64,"); idx != -1 {
-				// data:image/png;base64,......
-				prefix := img.URL[:idx]
-				if strings.HasPrefix(prefix, "data:") {
-					mediaType = strings.TrimPrefix(prefix, "data:")
+	// 1. Process MultiContent (Images + Text) or standard Content
+	if len(msg.content) > 0 {
+		for _, part := range msg.content {
+			switch part.Type {
+			case constants.ContentPartTypeText:
+				blocks = append(blocks, anthropic.NewTextBlock(part.Text))
+			case constants.ContentPartTypeImageURL:
+				if part.ImageURL == nil {
+					continue
 				}
-				data = img.URL[idx+len(";base64,"):]
-			} else {
-				// No prefix found, try to detect media type from magic numbers
-				if len(data) > 15 {
-					// We need to decode a small chunk to check magic numbers
-					// Just take a safe prefix length
-					prefixData := data
-					if len(prefixData) > 64 {
-						prefixData = prefixData[:64]
+				imgURL := part.ImageURL.URL
+
+				// Image conversion logic (URL vs Base64)
+				mediaType := "image/jpeg"
+				data := imgURL
+				isURL := false
+
+				if strings.HasPrefix(imgURL, "http://") || strings.HasPrefix(imgURL, "https://") {
+					isURL = true
+				} else if idx := strings.Index(imgURL, ";base64,"); idx != -1 {
+					prefix := imgURL[:idx]
+					if strings.HasPrefix(prefix, "data:") {
+						mediaType = strings.TrimPrefix(prefix, "data:")
 					}
-					decoded, err := base64.StdEncoding.DecodeString(prefixData)
-					if err == nil && len(decoded) > 4 {
-						// Check magic numbers
-						if len(decoded) >= 8 && string(decoded[0:8]) == "\x89PNG\r\n\x1a\n" {
-							mediaType = "image/png"
-						} else if len(decoded) >= 3 && string(decoded[0:3]) == "\xff\xd8\xff" {
-							mediaType = "image/jpeg"
-						} else if len(decoded) >= 6 && (string(decoded[0:6]) == "GIF87a" || string(decoded[0:6]) == "GIF89a") {
-							mediaType = "image/gif"
-						} else if len(decoded) >= 12 && string(decoded[0:4]) == "RIFF" && string(decoded[8:12]) == "WEBP" {
-							mediaType = "image/webp"
+					data = imgURL[idx+len(";base64,"):]
+				} else {
+					// Magic number detection for raw base64
+					if len(data) > 15 {
+						prefixData := data
+						if len(prefixData) > 64 {
+							prefixData = prefixData[:64]
+						}
+						decoded, err := base64.StdEncoding.DecodeString(prefixData)
+						if err == nil && len(decoded) > 4 {
+							if len(decoded) >= 8 && string(decoded[0:8]) == "\x89PNG\r\n\x1a\n" {
+								mediaType = "image/png"
+							} else if len(decoded) >= 3 && string(decoded[0:3]) == "\xff\xd8\xff" {
+								mediaType = "image/jpeg"
+							} else if len(decoded) >= 6 && (string(decoded[0:6]) == "GIF87a" || string(decoded[0:6]) == "GIF89a") {
+								mediaType = "image/gif"
+							} else if len(decoded) >= 12 && string(decoded[0:4]) == "RIFF" && string(decoded[8:12]) == "WEBP" {
+								mediaType = "image/webp"
+							}
 						}
 					}
 				}
-			}
 
-			if isURL {
-				blocks = append(blocks, anthropic.NewImageBlock(
-					anthropic.URLImageSourceParam{
-						URL: img.URL,
-					},
-				))
-			} else {
-				blocks = append(blocks, anthropic.NewImageBlockBase64(
-					mediaType,
-					data,
-				))
+				if isURL {
+					blocks = append(blocks, anthropic.NewImageBlock(
+						anthropic.URLImageSourceParam{
+							URL: imgURL,
+						},
+					))
+				} else {
+					blocks = append(blocks, anthropic.NewImageBlockBase64(
+						mediaType,
+						data,
+					))
+				}
 			}
 		}
-		if m.content != "" {
-			blocks = append(blocks, anthropic.NewTextBlock(m.content))
-		}
-	} else if m.content != "" {
-		blocks = append(blocks, anthropic.NewTextBlock(m.content))
-	}
-	for _, tc := range m.tcalls {
-		var input map[string]interface{}
-		if err := json.Unmarshal([]byte(tc.Function().Arguments()), &input); err != nil {
-			input = map[string]interface{}{}
-		}
-		param := anthropic.ToolUseBlockParam{
-			ID:    tc.ID(),
-			Name:  tc.Function().Name(),
-			Input: input,
-		}
-		blocks = append(blocks, anthropic.ContentBlockParamUnion{OfToolUse: &param})
 	}
 
-	switch m.role {
+	// 2. Process ToolCalls (Assistant role)
+	if len(msg.toolCalls) > 0 {
+		for _, tc := range msg.toolCalls {
+			if tc.type_ != constants.ToolTypeFunction {
+				continue
+			}
+			var input map[string]any
+			if err := json.Unmarshal([]byte(tc.fcall.Arguments()), &input); err != nil {
+				input = map[string]any{}
+			}
+			toolUse := anthropic.ToolUseBlockParam{
+				ID:    tc.id,
+				Name:  tc.fcall.Name(),
+				Input: input,
+			}
+			blocks = append(blocks, anthropic.ContentBlockParamUnion{OfToolUse: &toolUse})
+		}
+	}
+
+	// Construct final message based on role
+	switch role {
 	case constants.RoleUser:
 		if len(blocks) == 0 {
-			return anthropic.NewUserMessage(anthropic.NewTextBlock(""))
+			return anthropic.NewUserMessage(anthropic.NewTextBlock("")), nil
 		}
-		return anthropic.NewUserMessage(blocks...)
+		return anthropic.NewUserMessage(blocks...), nil
 	case constants.RoleAssistant:
 		if len(blocks) == 0 {
-			return anthropic.NewAssistantMessage(anthropic.NewTextBlock(""))
+			return anthropic.NewAssistantMessage(anthropic.NewTextBlock("")), nil
 		}
-		return anthropic.NewAssistantMessage(blocks...)
+		return anthropic.NewAssistantMessage(blocks...), nil
+	case constants.RoleSystem:
+		// System messages should be handled separately (in req.System),
+		// but if one slips here, treat as user or ignore?
+		// Ideally makeRequest filters them out.
+		return anthropic.NewUserMessage(anthropic.NewTextBlock(message.Content())), nil
 	default:
-		return anthropic.NewUserMessage(anthropic.NewTextBlock(m.content))
+		return anthropic.NewUserMessage(anthropic.NewTextBlock(message.Content())), nil
 	}
-}
-
-// anthropicToolResultMsg implements Message interface for tool results in Anthropic.
-type anthropicToolResultMsg struct {
-	toolUseID string
-	content   string
-}
-
-// Role implements Message.
-func (m *anthropicToolResultMsg) Role() string {
-	return constants.RoleUser
-}
-
-// Content implements Message.
-func (m *anthropicToolResultMsg) Content() string {
-	return m.content
-}
-
-// toMessageParam converts anthropicToolResultMsg to Anthropic's MessageParam.
-func (m *anthropicToolResultMsg) toMessageParam() anthropic.MessageParam {
-	return anthropic.NewUserMessage(anthropic.NewToolResultBlock(m.toolUseID, m.content, false))
 }

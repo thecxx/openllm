@@ -2,8 +2,8 @@ package openllm
 
 import (
 	"encoding/json"
+	"strings"
 
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/thecxx/openllm/constants"
 )
 
@@ -16,8 +16,8 @@ type MessageOptions struct {
 
 // ImageURL represents an image URL with detail level for multi-modal messages.
 type ImageURL struct {
-	URL    string
-	Detail string
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // MessageOption applies a configuration to MessageOptions.
@@ -26,12 +26,7 @@ type MessageOption func(opts *MessageOptions)
 
 // WithImageURL adds an image URL with automatic detail selection for OpenAI.
 func WithImageURL(imageURL string) MessageOption {
-	return func(opts *MessageOptions) {
-		opts.imageURLs = append(opts.imageURLs, ImageURL{
-			URL:    imageURL,
-			Detail: constants.ImageURLDetailAuto,
-		})
-	}
+	return WithImageURLDetail(imageURL, constants.ImageURLDetailAuto)
 }
 
 // WithImageURLDetail adds an image URL with an explicit detail level for OpenAI.
@@ -58,160 +53,190 @@ type Message interface {
 
 	// Content returns the textual content of the message.
 	Content() string
+
+	// Reasoning returns the reasoning/thinking content of the message (if any).
+	Reasoning() string
 }
 
-// WireMessage is the agnostic, serializable format used for message persistence.
-// It normalizes provider-specific structures (OpenAI/Anthropic) into a single format
-// that can be safely stored and later reconstructed for any supported model.
-type WireMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolCalls  []WireToolCall `json:"tool_calls,omitempty"`
-	Images     []ImageURL     `json:"images,omitempty"`
-}
+// NewUserMessage creates a user-role message suitable for any model.
+func NewUserMessage(content string, opts ...MessageOption) Message {
+	var options MessageOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+	msg := &llmmsg{
+		role: constants.RoleUser,
+	}
 
-// WireToolCall represents a tool invocation in the serializable WireMessage format.
-type WireToolCall struct {
-	Index int    `json:"index"`
-	ID    string `json:"id"`
-	Type  string `json:"type"`
-	Name  string `json:"name"`
-	Args  string `json:"args"`
-}
-
-type baseMessage struct {
-	role    string
-	content string
-}
-
-func (m *baseMessage) Role() string    { return m.role }
-func (m *baseMessage) Content() string { return m.content }
-
-// EncodeMessage serializes a Message into a JSON-encoded byte slice.
-// It handles provider-specific message structures (like OpenAI's tool calls or Anthropic's images)
-// and normalizes them into a unified WireMessage format for persistence.
-func EncodeMessage(msg Message) ([]byte, error) {
-	wm := WireMessage{Role: msg.Role(), Content: msg.Content()}
-	switch t := msg.(type) {
-	case *llmmsg:
-		// If it's an OpenAI tool result message, ensure role is "tool" for cross-provider compatibility
-		if t.rawmsg.ToolCallID != "" && t.rawmsg.Role == openai.ChatMessageRoleTool {
-			wm.Role = constants.RoleTool
-			wm.ToolCallID = t.rawmsg.ToolCallID
+	if len(options.imageURLs) == 0 {
+		msg.content = []ContentPart{
+			{Type: constants.ContentPartTypeText, Text: content},
 		}
-		for _, part := range t.rawmsg.MultiContent {
-			if part.Type == openai.ChatMessagePartTypeImageURL && part.ImageURL != nil {
-				wm.Images = append(wm.Images, ImageURL{URL: part.ImageURL.URL, Detail: string(part.ImageURL.Detail)})
-			}
-		}
-		for _, tc := range t.rawmsg.ToolCalls {
-			wm.ToolCalls = append(wm.ToolCalls, WireToolCall{
-				Index: copyInt(*tc.Index), // openai tool call index is pointer
-				ID:    tc.ID,
-				Type:  string(tc.Type),
-				Name:  tc.Function.Name,
-				Args:  tc.Function.Arguments,
+	} else {
+		// Mixed content: Text + Images
+		for _, img := range options.imageURLs {
+			msg.content = append(msg.content, ContentPart{
+				Type:     constants.ContentPartTypeImageURL,
+				ImageURL: &img,
 			})
 		}
-	case *anthropicMsg:
-		for _, tc := range t.tcalls {
-			wm.ToolCalls = append(wm.ToolCalls, WireToolCall{
-				Index: tc.Index(),
-				ID:    tc.ID(),
-				Type:  tc.Type(),
-				Name:  tc.Function().Name(),
-				Args:  tc.Function().Arguments(),
+		if content != "" {
+			msg.content = append(msg.content, ContentPart{
+				Type: constants.ContentPartTypeText,
+				Text: content,
 			})
 		}
-	case *anthropicToolResultMsg:
-		// Mark as "tool" role for Anthropic tool results to unify storage format
-		wm.Role = constants.RoleTool
-		wm.ToolCallID = t.toolUseID
 	}
-	return json.Marshal(wm)
+	return msg
 }
 
-// DecodeMessage deserializes a JSON-encoded byte slice back into a Message object.
-// The resulting Message is optimized for the provided Model type, ensuring that
-// tool calls and metadata are correctly reconstructed for the target provider.
-func DecodeMessage(model Model, data []byte) (Message, error) {
-	var wm WireMessage
-	if err := json.Unmarshal(data, &wm); err != nil {
-		return nil, err
+// NewToolMessage creates a tool result message suitable for any model.
+func NewToolMessage(tool ToolCall, result string) Message {
+	return &llmmsg{
+		role:       constants.RoleTool,
+		toolCallID: tool.ID(),
+		content: []ContentPart{
+			{Type: constants.ContentPartTypeText, Text: result},
+		},
 	}
+}
 
-	// Handle tool result messages specially
-	// We convert the unified "tool" role back to the provider's expected role
-	if wm.Role == constants.RoleTool && wm.ToolCallID != "" {
-		switch model.(type) {
-		case *llm:
-			// OpenAI uses "tool" role for tool results
-			raw := openai.ChatCompletionMessage{
-				Role:       openai.ChatMessageRoleTool,
-				ToolCallID: wm.ToolCallID,
-				Content:    wm.Content,
-			}
-			return &llmmsg{rawmsg: raw}, nil
-		case *anthropicLLM:
-			// Anthropic treats tool results as a special kind of "user" message content.
-			// anthropicToolResultMsg.Role() will return constants.RoleUser.
-			return &anthropicToolResultMsg{
-				toolUseID: wm.ToolCallID,
-				content:   wm.Content,
-			}, nil
-		default:
-			return &baseMessage{role: wm.Role, content: wm.Content}, nil
+// NewSystemMessage creates a system-role message suitable for any model.
+func NewSystemMessage(content string) Message {
+	return &llmmsg{
+		role: constants.RoleSystem,
+		content: []ContentPart{
+			{Type: constants.ContentPartTypeText, Text: content},
+		},
+	}
+}
+
+// NewAssistantMessage creates an assistant-role message suitable for any model.
+func NewAssistantMessage(content string, toolCalls ...ToolCall) Message {
+	msg := &llmmsg{
+		role: constants.RoleAssistant,
+	}
+	if content != "" {
+		msg.content = []ContentPart{
+			{Type: constants.ContentPartTypeText, Text: content},
 		}
 	}
-
-	// Handle standard messages (user, assistant, system) and assistant tool calls
-	switch model.(type) {
-	case *llm:
-		raw := openai.ChatCompletionMessage{
-			Role: wm.Role,
-		}
-		if len(wm.Images) > 0 {
-			for _, img := range wm.Images {
-				raw.MultiContent = append(raw.MultiContent, openai.ChatMessagePart{
-					Type:     openai.ChatMessagePartTypeImageURL,
-					ImageURL: &openai.ChatMessageImageURL{URL: img.URL, Detail: openai.ImageURLDetail(img.Detail)},
-				})
-			}
-			raw.MultiContent = append(raw.MultiContent, openai.ChatMessagePart{Type: openai.ChatMessagePartTypeText, Text: wm.Content})
-		} else {
-			raw.Content = wm.Content
-		}
-		if len(wm.ToolCalls) > 0 {
-			for _, tc := range wm.ToolCalls {
-				idx := tc.Index
-				raw.ToolCalls = append(raw.ToolCalls, openai.ToolCall{
-					Index: &idx,
-					ID:    tc.ID,
-					Type:  openai.ToolType(tc.Type),
-					Function: openai.FunctionCall{
-						Name:      tc.Name,
-						Arguments: tc.Args,
-					},
-				})
-			}
-		}
-		return &llmmsg{rawmsg: raw}, nil
-	case *anthropicLLM:
-		var tcalls []ToolCall
-		for _, tc := range wm.ToolCalls {
-			tcalls = append(tcalls, &toolcall{
-				index: tc.Index,
-				id:    tc.ID,
-				type_: tc.Type,
+	if len(toolCalls) > 0 {
+		for _, tc := range toolCalls {
+			msg.toolCalls = append(msg.toolCalls, &toolcall{
+				index: tc.Index(),
+				id:    tc.ID(),
+				type_: tc.Type(),
 				fcall: funcall{
-					name: tc.Name,
-					args: tc.Args,
+					name: tc.Function().Name(),
+					args: tc.Function().Arguments(),
 				},
 			})
 		}
-		return &anthropicMsg{role: wm.Role, content: wm.Content, tcalls: tcalls}, nil
-	default:
-		return &baseMessage{role: wm.Role, content: wm.Content}, nil
 	}
+	return msg
+}
+
+// ContentPart represents a part of a multi-modal message.
+type ContentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+// llmmsg implements Message interface using a unified structure.
+type llmmsg struct {
+	role       string
+	content    []ContentPart
+	toolCalls  []*toolcall
+	toolCallID string
+	reasoning  string
+	refusal    string
+	name       string
+}
+
+// Role implements Message.
+func (m *llmmsg) Role() string {
+	return m.role
+}
+
+// Content implements Message.
+func (m *llmmsg) Content() string {
+	var sb strings.Builder
+	for _, part := range m.content {
+		if part.Type == constants.ContentPartTypeText {
+			sb.WriteString(part.Text)
+		}
+	}
+	return sb.String()
+}
+
+// Reasoning implements Message.
+func (m *llmmsg) Reasoning() string {
+	return m.reasoning
+}
+
+// MarshalJSON implements json.Marshaler.
+func (m *llmmsg) MarshalJSON() ([]byte, error) {
+	// We'll use a structure compatible with our previous WireMessage but cleaner.
+	type alias struct {
+		Role       string        `json:"role"`
+		Content    []ContentPart `json:"content,omitempty"`
+		ToolCalls  []*toolcall   `json:"tool_calls,omitempty"`
+		ToolCallID string        `json:"tool_call_id,omitempty"`
+		Reasoning  string        `json:"reasoning,omitempty"`
+		Refusal    string        `json:"refusal,omitempty"`
+		Name       string        `json:"name,omitempty"`
+	}
+	return json.Marshal(&alias{
+		Role:       m.role,
+		Content:    m.content,
+		ToolCalls:  m.toolCalls,
+		ToolCallID: m.toolCallID,
+		Reasoning:  m.reasoning,
+		Refusal:    m.refusal,
+		Name:       m.name,
+	})
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (m *llmmsg) UnmarshalJSON(data []byte) error {
+	type alias struct {
+		Role       string        `json:"role"`
+		Content    []ContentPart `json:"content,omitempty"`
+		ToolCalls  []*toolcall   `json:"tool_calls,omitempty"`
+		ToolCallID string        `json:"tool_call_id,omitempty"`
+		Reasoning  string        `json:"reasoning,omitempty"`
+		Refusal    string        `json:"refusal,omitempty"`
+		Name       string        `json:"name,omitempty"`
+	}
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	m.role = tmp.Role
+	m.content = tmp.Content
+	m.toolCalls = tmp.ToolCalls
+	m.toolCallID = tmp.ToolCallID
+	m.reasoning = tmp.Reasoning
+	m.refusal = tmp.Refusal
+	m.name = tmp.Name
+	return nil
+}
+
+// EncodeMessage serializes a Message into a JSON-encoded byte slice.
+func EncodeMessage(msg Message) ([]byte, error) {
+	if m, ok := msg.(json.Marshaler); ok {
+		return m.MarshalJSON()
+	}
+	return json.Marshal(msg)
+}
+
+// DecodeMessage deserializes a JSON-encoded byte slice back into a Message object.
+func DecodeMessage(data []byte) (Message, error) {
+	var m llmmsg
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }

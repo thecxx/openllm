@@ -13,9 +13,28 @@ type ChatOptions struct {
 	tools []Tool
 	// watcher handles streaming events during ChatCompletionStream; ignored for blocking calls.
 	watcher StreamWatcher
+
+	// maxTokens limits the maximum number of tokens generated in the response.
+	maxTokens *int
 	// temperature controls randomness; nil leaves it to server defaults.
 	// Typical values range from 0.0 (deterministic) to 2.0 (more random).
-	temperature *float32
+	temperature *float64
+
+	// topK controls the number of highest probability vocabulary tokens to keep for top-k-filtering.
+	topK *int
+	// topP controls nucleus sampling, keeping the top tokens with cumulative probability >= topP.
+	topP *float64
+
+	// reasoningEffort controls the reasoning effort/budget.
+	// Values should be one of "low", "medium", "high" (see constants/reasoning.go).
+	reasoningEffort *string
+}
+
+// WithReasoningEffort sets the reasoning effort.
+// For OpenAI o1/o3, this maps directly to `reasoning_effort`.
+// For Anthropic Claude, this maps to a token budget (Low: 1024, Medium: 4096, High: 8192, capped by max_tokens).
+func WithReasoningEffort(effort string) ChatOption {
+	return func(opts *ChatOptions) { opts.reasoningEffort = &effort }
 }
 
 // WithSystemPrompt sets the system prompt for the current chat request.
@@ -23,14 +42,9 @@ func WithSystemPrompt(prompt string) ChatOption {
 	return func(opts *ChatOptions) { opts.prompt = prompt }
 }
 
-// WithTools sets the function tools the model may call during generation.
-func WithTools(tools []Tool) ChatOption {
-	return func(opts *ChatOptions) { opts.tools = tools }
-}
-
-// WithTool set a function tool the model may call during generation.
-func WithTool(tool Tool) ChatOption {
-	return func(opts *ChatOptions) { opts.tools = append(opts.tools, tool) }
+// WithTool sets the function tools the model may call during generation.
+func WithTool(tools ...Tool) ChatOption {
+	return func(opts *ChatOptions) { opts.tools = append(opts.tools, tools...) }
 }
 
 // StreamWatcher sets the handler used to receive streamed deltas and tool-call updates.
@@ -38,7 +52,24 @@ func WithStreamWatcher(watcher StreamWatcher) ChatOption {
 	return func(opts *ChatOptions) { opts.watcher = watcher }
 }
 
+// WithMaxTokens sets the maximum number of tokens to generate.
+func WithMaxTokens(maxTokens int) ChatOption {
+	return func(opts *ChatOptions) { opts.maxTokens = &maxTokens }
+}
+
 // WithTemperature sets temperature for the current request; if not provided, server defaults apply.
-func WithTemperature(temperature float32) ChatOption {
+func WithTemperature(temperature float64) ChatOption {
 	return func(opts *ChatOptions) { opts.temperature = &temperature }
+}
+
+// WithTopK sets the Top-K sampling parameter.
+// Only the top K tokens with the highest probabilities are considered for generation.
+func WithTopK(topK int) ChatOption {
+	return func(opts *ChatOptions) { opts.topK = &topK }
+}
+
+// WithTopP sets the Top-P (nucleus) sampling parameter.
+// Only the top tokens with cumulative probability >= topP are considered for generation.
+func WithTopP(topP float64) ChatOption {
+	return func(opts *ChatOptions) { opts.topP = &topP }
 }

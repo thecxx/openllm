@@ -90,28 +90,76 @@ func (l *llm) ChatCompletion(ctx context.Context, messages []Message, opts ...Ch
 		}
 	}
 
-	stats := Stats{
-		Usage: Usage{
-			InputTokens:  chatResp.Usage.PromptTokens,
-			OutputTokens: chatResp.Usage.CompletionTokens,
-			TotalTokens:  chatResp.Usage.TotalTokens,
-		},
-		Duration: time.Since(start),
-		Meta: Meta{
-			Provider:          constants.ProviderOpenAI,
-			Model:             chatResp.Model,
-			RequestID:         chatResp.ID,
-			SystemFingerprint: chatResp.SystemFingerprint,
-			StopReason:        string(choice.FinishReason),
-		},
+	usage := Usage{
+		InputTokens:  chatResp.Usage.PromptTokens,
+		OutputTokens: chatResp.Usage.CompletionTokens,
+		TotalTokens:  chatResp.Usage.TotalTokens,
 	}
 	if chatResp.Usage.PromptTokensDetails != nil {
-		stats.Usage.CachedTokens = chatResp.Usage.PromptTokensDetails.CachedTokens
+		usage.CachedTokens = chatResp.Usage.PromptTokensDetails.CachedTokens
 	}
 	if chatResp.Usage.CompletionTokensDetails != nil {
-		stats.Usage.ReasoningTokens = chatResp.Usage.CompletionTokensDetails.ReasoningTokens
+		usage.ReasoningTokens = chatResp.Usage.CompletionTokensDetails.ReasoningTokens
 	}
-	return &response{answer: &llmmsg{rawmsg: choice.Message}, tcalls: tcalls, stats: stats}, nil
+
+	meta := Meta{
+		Provider:          constants.ProviderOpenAI,
+		Model:             chatResp.Model,
+		RequestID:         chatResp.ID,
+		SystemFingerprint: chatResp.SystemFingerprint,
+		StopReason:        string(choice.FinishReason),
+	}
+	duration := time.Since(start)
+
+	return &response{
+		answer: &llmmsg{
+			role:      choice.Message.Role,
+			reasoning: choice.Message.ReasoningContent,
+			refusal:   choice.Message.Refusal,
+			content: func() []ContentPart {
+				if choice.Message.Content != "" {
+					return []ContentPart{{Type: constants.ContentPartTypeText, Text: choice.Message.Content}}
+				}
+				var parts []ContentPart
+				for _, p := range choice.Message.MultiContent {
+					if p.Type == openai.ChatMessagePartTypeText {
+						parts = append(parts, ContentPart{Type: constants.ContentPartTypeText, Text: p.Text})
+					} else if p.Type == openai.ChatMessagePartTypeImageURL && p.ImageURL != nil {
+						parts = append(parts, ContentPart{
+							Type: constants.ContentPartTypeImageURL,
+							ImageURL: &ImageURL{
+								URL:    p.ImageURL.URL,
+								Detail: string(p.ImageURL.Detail),
+							},
+						})
+					}
+				}
+				return parts
+			}(),
+			toolCalls: func() []*toolcall {
+				if len(tcalls) == 0 {
+					return nil
+				}
+				var gtc []*toolcall
+				for _, tc := range tcalls {
+					gtc = append(gtc, &toolcall{
+						index: tc.Index(),
+						id:    tc.ID(),
+						type_: tc.Type(),
+						fcall: funcall{
+							name: tc.Function().Name(),
+							args: tc.Function().Arguments(),
+						},
+					})
+				}
+				return gtc
+			}(),
+		},
+		tcalls:   tcalls,
+		usage:    usage,
+		meta:     meta,
+		duration: duration,
+	}, nil
 }
 
 // ChatCompletionStream performs a streaming chat completion request.
@@ -141,10 +189,12 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 	defer stream.Close()
 
 	var (
-		role    string
-		content strings.Builder
-		rawmsg  openai.ChatCompletionMessage
-		callm   = make(map[int]*toolcall)
+		role      string
+		content   strings.Builder
+		reasoning strings.Builder
+		refusal   strings.Builder
+		rawmsg    openai.ChatCompletionMessage
+		callm     = make(map[int]*toolcall)
 	)
 
 	for {
@@ -173,16 +223,34 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 			role = choice.Delta.Role
 		}
 
-		if len(choice.Delta.ToolCalls) <= 0 {
-			if choice.Delta.Content != "" {
-				if options.watcher != nil {
-					if err = options.watcher.OnContent(choice.Delta.Content); err != nil {
-						return nil, err
-					}
+		if choice.Delta.ReasoningContent != "" {
+			if options.watcher != nil {
+				if err = options.watcher.OnReasoning(choice.Delta.ReasoningContent); err != nil {
+					return nil, err
 				}
-				content.WriteString(choice.Delta.Content)
 			}
-		} else {
+			reasoning.WriteString(choice.Delta.ReasoningContent)
+		}
+
+		if choice.Delta.Content != "" {
+			if options.watcher != nil {
+				if err = options.watcher.OnContent(choice.Delta.Content); err != nil {
+					return nil, err
+				}
+			}
+			content.WriteString(choice.Delta.Content)
+		}
+
+		if choice.Delta.Refusal != "" {
+			if options.watcher != nil {
+				if err = options.watcher.OnRefusal(choice.Delta.Refusal); err != nil {
+					return nil, err
+				}
+			}
+			refusal.WriteString(choice.Delta.Refusal)
+		}
+
+		if len(choice.Delta.ToolCalls) > 0 {
 			for _, call := range choice.Delta.ToolCalls {
 				if call.Index == nil {
 					continue
@@ -229,6 +297,8 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 
 	rawmsg.Role = role
 	rawmsg.Content = content.String()
+	rawmsg.ReasoningContent = reasoning.String()
+	rawmsg.Refusal = refusal.String()
 
 	var tcalls = make([]ToolCall, 0)
 	if len(callm) > 0 {
@@ -252,15 +322,58 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 		}
 	}
 
-	stats := Stats{
-		Usage:    Usage{},
-		Duration: time.Since(start),
-		Meta: Meta{
+	return &response{
+		answer: &llmmsg{
+			role: rawmsg.Role,
+			content: func() []ContentPart {
+				if rawmsg.Content != "" {
+					return []ContentPart{{Type: constants.ContentPartTypeText, Text: rawmsg.Content}}
+				}
+				var parts []ContentPart
+				for _, p := range rawmsg.MultiContent {
+					if p.Type == openai.ChatMessagePartTypeText {
+						parts = append(parts, ContentPart{Type: constants.ContentPartTypeText, Text: p.Text})
+					} else if p.Type == openai.ChatMessagePartTypeImageURL && p.ImageURL != nil {
+						parts = append(parts, ContentPart{
+							Type: constants.ContentPartTypeImageURL,
+							ImageURL: &ImageURL{
+								URL:    p.ImageURL.URL,
+								Detail: string(p.ImageURL.Detail),
+							},
+						})
+					}
+				}
+				return parts
+			}(),
+			reasoning: rawmsg.ReasoningContent,
+			refusal:   rawmsg.Refusal,
+			toolCalls: func() []*toolcall {
+				if len(tcalls) == 0 {
+					return nil
+				}
+				var gtc []*toolcall
+				for _, tc := range tcalls {
+					gtc = append(gtc, &toolcall{
+						index: tc.Index(),
+						id:    tc.ID(),
+						type_: tc.Type(),
+						fcall: funcall{
+							name: tc.Function().Name(),
+							args: tc.Function().Arguments(),
+						},
+					})
+				}
+				return gtc
+			}(),
+		},
+		tcalls:   tcalls,
+		usage:    Usage{},
+		duration: time.Since(start),
+		meta: Meta{
 			Provider: constants.ProviderOpenAI,
 			Model:    l.name,
 		},
-	}
-	return &response{answer: &llmmsg{rawmsg: rawmsg}, tcalls: tcalls, stats: stats}, nil
+	}, nil
 }
 
 // makeRequest builds an OpenAI ChatCompletionRequest from ChatOptions and Message list.
@@ -268,9 +381,29 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 // and attaches tool definitions when provided.
 func (l *llm) makeRequest(opts *ChatOptions, messages []Message) (req openai.ChatCompletionRequest, err error) {
 	req.Model = l.name
-	// Set temperature
+	// Option: MaxTokens
+	if opts.maxTokens != nil {
+		req.MaxCompletionTokens = *opts.maxTokens
+		// req.MaxTokens = *opts.maxTokens
+	}
+	// Option: Temperature
 	if opts.temperature != nil {
-		req.Temperature = *opts.temperature
+		req.Temperature = float32(*opts.temperature)
+	}
+	// Option: TopP
+	if opts.topP != nil {
+		req.TopP = float32(*opts.topP)
+	}
+
+	// Option: ReasoningEffort
+	if opts.reasoningEffort != nil {
+		switch *opts.reasoningEffort {
+		case constants.ReasoningEffortLow, constants.ReasoningEffortMedium, constants.ReasoningEffortHigh:
+			req.ReasoningEffort = *opts.reasoningEffort
+		default:
+			// Fallback or ignore invalid values
+			req.ReasoningEffort = constants.ReasoningEffortMedium
+		}
 	}
 
 	if opts.prompt != "" {
@@ -281,29 +414,15 @@ func (l *llm) makeRequest(opts *ChatOptions, messages []Message) (req openai.Cha
 	}
 
 	for _, message := range messages {
-		// Try to cast to llmmsg first for efficiency
-		if msg, ok := message.(*llmmsg); ok {
-			req.Messages = append(req.Messages, msg.rawmsg)
-			continue
+		openaiMsg, err := l.convertMessage(message)
+		if err != nil {
+			// Fallback? Or return error?
+			// Since convertMessage returns nil error for fallback currently,
+			// this should be fine.
+			// But for safety:
+			return req, err
 		}
-
-		// Fallback to JSON round-trip or basic fields
-		// Since we don't know the implementation, we can only rely on Role and Content if it's not a BaseMessage
-		// Or try to marshal it if it supports JSON
-		data, err := json.Marshal(message)
-		if err == nil {
-			var openaiMsg openai.ChatCompletionMessage
-			if err := json.Unmarshal(data, &openaiMsg); err == nil {
-				req.Messages = append(req.Messages, openaiMsg)
-				continue
-			}
-		}
-
-		// Last resort: simple text message
-		req.Messages = append(req.Messages, openai.ChatCompletionMessage{
-			Role:    message.Role(),
-			Content: message.Content(),
-		})
+		req.Messages = append(req.Messages, openaiMsg)
 	}
 
 	for _, tool := range opts.tools {
@@ -339,77 +458,82 @@ func (l *llm) makeRequest(opts *ChatOptions, messages []Message) (req openai.Cha
 	return req, nil
 }
 
-// copyInt returns a value copy of the provided int.
-// It exists mainly to document the intent when copying pointer-based indices.
-func copyInt(i int) int { return i }
-
-// NewUserMessage creates a user-role message suitable for OpenAI.
-func (l *llm) NewUserMessage(content string, opts ...MessageOption) Message {
-	var options MessageOptions
-	for _, opt := range opts {
-		opt(&options)
+// convertMessage transforms the unified Message (llmmsg) into OpenAI's ChatCompletionMessage.
+func (l *llm) convertMessage(message Message) (openai.ChatCompletionMessage, error) {
+	// Cast to llmmsg to access internal structure
+	msg, ok := message.(*llmmsg)
+	if !ok {
+		// Fallback for custom implementations
+		return openai.ChatCompletionMessage{
+			Role:    message.Role(),
+			Content: message.Content(),
+		}, nil
 	}
-	rawmsg := openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser}
-	if len(options.imageURLs) <= 0 {
-		rawmsg.Content = content
-	} else {
-		for _, imageURL := range options.imageURLs {
-			rawmsg.MultiContent = append(rawmsg.MultiContent, openai.ChatMessagePart{
-				Type: openai.ChatMessagePartTypeImageURL,
-				ImageURL: &openai.ChatMessageImageURL{
-					URL:    imageURL.URL,
-					Detail: openai.ImageURLDetail(imageURL.Detail),
+
+	raw := openai.ChatCompletionMessage{
+		Role:             msg.role,
+		ReasoningContent: msg.reasoning,
+		ToolCallID:       msg.toolCallID,
+	}
+
+	// Handle Content (Text + Images)
+	if len(msg.content) > 0 {
+		// If simple text (length 1 and type text), can use Content field,
+		// but MultiContent is more robust for general cases.
+		// However, standard OpenAI client might prefer Content field for simple text.
+		// Let's check if it's pure text.
+		isPureText := true
+		for _, part := range msg.content {
+			if part.Type != constants.ContentPartTypeText {
+				isPureText = false
+				break
+			}
+		}
+
+		if isPureText && len(msg.content) == 1 {
+			raw.Content = msg.content[0].Text
+		} else {
+			for _, part := range msg.content {
+				switch part.Type {
+				case constants.ContentPartTypeText:
+					raw.MultiContent = append(raw.MultiContent, openai.ChatMessagePart{
+						Type: openai.ChatMessagePartTypeText,
+						Text: part.Text,
+					})
+				case constants.ContentPartTypeImageURL:
+					if part.ImageURL != nil {
+						raw.MultiContent = append(raw.MultiContent, openai.ChatMessagePart{
+							Type: openai.ChatMessagePartTypeImageURL,
+							ImageURL: &openai.ChatMessageImageURL{
+								URL:    part.ImageURL.URL,
+								Detail: openai.ImageURLDetail(part.ImageURL.Detail),
+							},
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// Handle ToolCalls
+	if len(msg.toolCalls) > 0 {
+		for _, tc := range msg.toolCalls {
+			index := tc.index
+			raw.ToolCalls = append(raw.ToolCalls, openai.ToolCall{
+				Index: &index,
+				ID:    tc.id,
+				Type:  openai.ToolTypeFunction,
+				Function: openai.FunctionCall{
+					Name:      tc.fcall.Name(),
+					Arguments: tc.fcall.Arguments(),
 				},
 			})
 		}
-		rawmsg.MultiContent = append(rawmsg.MultiContent, openai.ChatMessagePart{
-			Type: openai.ChatMessagePartTypeText,
-			Text: content,
-		})
 	}
-	return &llmmsg{rawmsg: rawmsg}
+
+	return raw, nil
 }
 
-// NewToolMessage creates a tool result message suitable for OpenAI.
-func (l *llm) NewToolMessage(tool ToolCall, result string) Message {
-	return &llmmsg{
-		rawmsg: openai.ChatCompletionMessage{
-			Role:       openai.ChatMessageRoleTool,
-			ToolCallID: tool.ID(),
-			Content:    result,
-		},
-	}
-}
-
-// llmmsg implements Message interface using OpenAI's message format internally.
-type llmmsg struct {
-	rawmsg openai.ChatCompletionMessage
-}
-
-// Role implements Message.
-func (m *llmmsg) Role() string {
-	return m.rawmsg.Role
-}
-
-// Content implements Message.
-func (m *llmmsg) Content() string {
-	if m.rawmsg.Content != "" {
-		return m.rawmsg.Content
-	}
-	for _, content := range m.rawmsg.MultiContent {
-		if content.Type == openai.ChatMessagePartTypeText {
-			return content.Text
-		}
-	}
-	return ""
-}
-
-// MarshalJSON implements json.Marshaler.
-func (m *llmmsg) MarshalJSON() ([]byte, error) {
-	return json.Marshal(m.rawmsg)
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (m *llmmsg) UnmarshalJSON(data []byte) error {
-	return json.Unmarshal(data, &m.rawmsg)
-}
+// copyInt returns a value copy of the provided int.
+// It exists mainly to document the intent when copying pointer-based indices.
+func copyInt(i int) int { return i }
