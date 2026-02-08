@@ -388,14 +388,14 @@ func (l *llm) makeRequest(opts *ChatOptions, messages []Message) (req openai.Cha
 		req.TopP = float32(*opts.topP)
 	}
 
-	// Option: ReasoningEffort
-	if opts.reasoningEffort != nil {
-		switch *opts.reasoningEffort {
-		case constants.ReasoningEffortLow, constants.ReasoningEffortMedium, constants.ReasoningEffortHigh:
-			req.ReasoningEffort = *opts.reasoningEffort
+	// Option: ReasoningLevel
+	if opts.reasoningLevel != nil {
+		switch *opts.reasoningLevel {
+		case constants.ReasoningLevelLow, constants.ReasoningLevelMedium, constants.ReasoningLevelHigh:
+			req.ReasoningEffort = *opts.reasoningLevel
 		default:
 			// Fallback or ignore invalid values
-			req.ReasoningEffort = constants.ReasoningEffortMedium
+			req.ReasoningEffort = constants.ReasoningLevelMedium
 		}
 	}
 

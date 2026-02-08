@@ -305,15 +305,15 @@ func (a *anthropicLLM) makeRequest(opts *ChatOptions, messages []Message) (req a
 		req.TopP = anthropic.Opt(*opts.topP)
 	}
 
-	// Option: ReasoningEffort
-	if opts.reasoningEffort != nil {
+	// Option: ReasoningLevel
+	if opts.reasoningLevel != nil {
 		var budget int64
-		switch *opts.reasoningEffort {
-		case constants.ReasoningEffortLow:
+		switch *opts.reasoningLevel {
+		case constants.ReasoningLevelLow:
 			budget = 1024
-		case constants.ReasoningEffortMedium:
+		case constants.ReasoningLevelMedium:
 			budget = 4096
-		case constants.ReasoningEffortHigh:
+		case constants.ReasoningLevelHigh:
 			budget = 8192
 		default:
 			budget = 4096 // Default to Medium

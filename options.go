@@ -22,16 +22,16 @@ type ChatOptions struct {
 	topK *int
 	// topP controls nucleus sampling, keeping the top tokens with cumulative probability >= topP.
 	topP *float64
-	// reasoningEffort controls the reasoning effort/budget.
+	// reasoningLevel controls the reasoning effort/budget.
 	// Values should be one of "low", "medium", "high" (see constants/reasoning.go).
-	reasoningEffort *string
+	reasoningLevel *string
 }
 
-// WithReasoningEffort sets the reasoning effort.
+// WithReasoning sets the reasoning level.
 // For OpenAI o1/o3, this maps directly to `reasoning_effort`.
 // For Anthropic Claude, this maps to a token budget (Low: 1024, Medium: 4096, High: 8192, capped by max_tokens).
-func WithReasoningEffort(effort string) ChatOption {
-	return func(opts *ChatOptions) { opts.reasoningEffort = &effort }
+func WithReasoning(level string) ChatOption {
+	return func(opts *ChatOptions) { opts.reasoningLevel = &level }
 }
 
 // WithSystemPrompt sets the system prompt for the current chat request.

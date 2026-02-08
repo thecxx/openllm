@@ -7,20 +7,20 @@ import (
 // StreamWatcher handles events emitted during LLM generation.
 type StreamWatcher interface {
 	// OnRefusal is invoked when the model explicitly refuses to answer (e.g., safety filters).
-	// The delta parameter contains the partial refusal message.
-	OnRefusal(delta string) error
+	// The chunk parameter contains the partial refusal message.
+	OnRefusal(chunk string) error
 
 	// OnReasoning is invoked when the model emits "Chain of Thought" tokens.
-	// The delta parameter contains partial reasoning content (e.g., reasoning_content or thinking block).
-	OnReasoning(delta string) error
+	// The chunk parameter contains partial reasoning content (e.g., reasoning_content or thinking block).
+	OnReasoning(chunk string) error
 
 	// OnContent is invoked whenever the model emits a piece of the final visible response.
-	// The delta parameter contains the partial response text.
-	OnContent(delta string) error
+	// The chunk parameter contains the partial response text.
+	OnContent(chunk string) error
 
 	// OnToolCall is invoked when a tool call is detected.
-	// The tcall contains tool metadata, and args contains the partial JSON arguments string.
-	OnToolCall(ctx context.Context, tcall ToolCall, args string) (err error)
+	// The tcall contains tool metadata, and chunk contains the partial JSON arguments string.
+	OnToolCall(ctx context.Context, tcall ToolCall, chunk string) (err error)
 
 	// OnStop is invoked after the model has finished producing all output.
 	OnStop() error

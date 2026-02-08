@@ -60,7 +60,7 @@ messages := []openllm.Message{
 
 // Optional: Enable Reasoning
 resp, err := model.ChatCompletion(ctx, messages, 
-    openllm.WithReasoningEffort(constants.ReasoningEffortMedium),
+    openllm.WithReasoning(constants.ReasoningLevelMedium),
 )
 if err != nil {
     log.Fatal(err)
@@ -96,7 +96,7 @@ watcher := &MyWatcher{}
 
 resp, err := model.ChatCompletionStream(ctx, messages, 
     openllm.WithStreamWatcher(watcher),
-    openllm.WithReasoningEffort(constants.ReasoningEffortHigh),
+    openllm.WithReasoning(constants.ReasoningLevelHigh),
 )
 ```
 
