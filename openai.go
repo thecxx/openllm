@@ -90,18 +90,6 @@ func (l *llm) ChatCompletion(ctx context.Context, messages []Message, opts ...Ch
 		}
 	}
 
-	usage := Usage{
-		InputTokens:  chatResp.Usage.PromptTokens,
-		OutputTokens: chatResp.Usage.CompletionTokens,
-		TotalTokens:  chatResp.Usage.TotalTokens,
-	}
-	if chatResp.Usage.PromptTokensDetails != nil {
-		usage.CachedTokens = chatResp.Usage.PromptTokensDetails.CachedTokens
-	}
-	if chatResp.Usage.CompletionTokensDetails != nil {
-		usage.ReasoningTokens = chatResp.Usage.CompletionTokensDetails.ReasoningTokens
-	}
-
 	meta := Meta{
 		Provider:          constants.ProviderOpenAI,
 		Model:             chatResp.Model,
@@ -153,7 +141,6 @@ func (l *llm) ChatCompletion(ctx context.Context, messages []Message, opts ...Ch
 			}(),
 		},
 		tcalls:   tcalls,
-		usage:    usage,
 		meta:     meta,
 		duration: duration,
 	}, nil
@@ -360,7 +347,6 @@ func (l *llm) ChatCompletionStream(ctx context.Context, messages []Message, opts
 			}(),
 		},
 		tcalls:   tcalls,
-		usage:    Usage{},
 		duration: time.Since(start),
 		meta: Meta{
 			Provider: constants.ProviderOpenAI,

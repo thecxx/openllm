@@ -116,13 +116,6 @@ func (a *anthropicLLM) ChatCompletion(ctx context.Context, messages []Message, o
 		}(),
 	}
 
-	usage := Usage{
-		InputTokens:              int(chatResp.Usage.InputTokens),
-		OutputTokens:             int(chatResp.Usage.OutputTokens),
-		TotalTokens:              int(chatResp.Usage.InputTokens + chatResp.Usage.OutputTokens),
-		CacheCreationInputTokens: int(chatResp.Usage.CacheCreationInputTokens),
-		CacheReadInputTokens:     int(chatResp.Usage.CacheReadInputTokens),
-	}
 	duration := time.Since(start)
 	meta := Meta{
 		Provider:   constants.ProviderAnthropic,
@@ -134,7 +127,6 @@ func (a *anthropicLLM) ChatCompletion(ctx context.Context, messages []Message, o
 	return &response{
 		answer:   answer,
 		tcalls:   tcalls,
-		usage:    usage,
 		duration: duration,
 		meta:     meta,
 	}, nil
@@ -269,7 +261,6 @@ func (a *anthropicLLM) ChatCompletionStream(ctx context.Context, messages []Mess
 	return &response{
 		answer:   answer,
 		tcalls:   tcalls,
-		usage:    Usage{},
 		duration: time.Since(start),
 		meta: Meta{
 			Provider: constants.ProviderAnthropic,

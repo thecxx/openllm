@@ -17,7 +17,7 @@ OpenLLM 是一个用于 Go 语言的轻量级、统一的大语言模型（LLM�
   - 支持函数调用（Function Calling）。
   - **自动解析**：通过 Go 反射机制，自动从处理函数的参数结构体中解析 JSON Schema（支持自定义标签 `openllm`）。
 - **消息序列化**：提供跨提供商的消息编解码工具，方便对话历史的持久化与恢复。
-- **详尽统计**：在响应中包含 Token 消耗（输入/输出/缓存命中/推理消耗）、请求耗时及元信息（RequestID, Fingerprint 等）。
+- **请求元信息**：在响应中包含请求耗时及元信息（RequestID, Fingerprint 等）。
 - **多模态支持**：支持图片输入（OpenAI 和 Anthropic 兼容）。
 
 ### 安装
@@ -71,7 +71,6 @@ fmt.Println("回答:", resp.Answer().Content())
 if resp.Answer().Reasoning() != "" {
     fmt.Println("思考过程:", resp.Answer().Reasoning())
 }
-fmt.Printf("消耗: %+v\n", resp.Usage())
 ```
 
 #### 3. 流式对话

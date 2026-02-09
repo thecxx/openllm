@@ -17,7 +17,7 @@ OpenLLM is a lightweight, unified Large Language Model (LLM) integration package
   - Supports Function Calling.
   - **Auto Parsing**: Automatically generates JSON Schema from Go function parameter structs using reflection (supports custom `openllm` tags).
 - **Message Serialization**: Provides cross-provider message encoding/decoding for easy conversation history persistence and restoration.
-- **Detailed Statistics**: Includes token usage (input/output/cache hits/reasoning tokens), request duration, and metadata (RequestID, Fingerprint, etc.) in responses.
+- **Request Metadata**: Includes request duration and metadata (RequestID, Fingerprint, etc.) in responses.
 - **Multimodal Support**: Supports image inputs (OpenAI and Anthropic compatible).
 
 ### Installation
@@ -71,7 +71,6 @@ fmt.Println("Answer:", resp.Answer().Content())
 if resp.Answer().Reasoning() != "" {
     fmt.Println("Reasoning:", resp.Answer().Reasoning())
 }
-fmt.Printf("Usage: %+v\n", resp.Usage())
 ```
 
 #### 3. Streaming
